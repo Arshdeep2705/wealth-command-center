@@ -1,0 +1,24 @@
+# ── Privacy: never commit real personal / financial / NDIS data ──
+seed/seed.arsh.json
+seed/*.private.json
+*backup*.json
+arsh-finance-backup.json
+data/verify.js
+data/*.csv
+data/*.pdf
+data/statements/
+# QA screenshots render real balances + client names — keep them out
+qa-*.png
+.playwright-mcp/
+# Phone helper carries the seed link (your data) — keep private
+OPEN-ON-MY-PHONE.html
+*.seedlink.txt
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+node_modules/
+.vscode/
+.idea/
