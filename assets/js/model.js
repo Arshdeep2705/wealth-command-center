@@ -165,32 +165,37 @@
   }
 
   /* ---- Month summary (income, tax, expenses, net) -------------------------- */
+  // effective ATO rate on the annual run-rate (incl. 2% Medicare, + MLS if enabled)
+  function effectiveRate(state) {
+    var annual = weeklyTotal(state) * 52;
+    if (annual <= 0) return 0;
+    return taxBreakdown(annual, { applyMLS: state.settings.mlsEnabled, hasCover: state.settings.privateHospitalCover }).effective;
+  }
   function monthSummary(state, key) {
     var inc = monthIncome(state, key);
     var gross = inc.gross;
-    var setPct = (state.settings.taxSetAsidePct || 0) / 100;
-    var taxSetAside = gross * setPct;
+    var tax = gross * effectiveRate(state);            // Australian tax provision for the month
     var expenses = monthExpenses(state, key);
-    var afterTaxFlat = gross - taxSetAside;          // user's rule (keep 60%)
-    var netToSavings = gross - taxSetAside - expenses; // adds to net worth
+    var afterTax = gross - tax;                         // after Australian tax
+    var netToSavings = afterTax - expenses;            // adds to net worth
     var netProfit = gross - expenses;                  // pre-tax operating profit
     return {
       key: key, gross: gross, bySource: inc.bySource, overridden: !!inc.overridden,
-      taxSetAside: taxSetAside, expenses: expenses,
-      afterTaxFlat: afterTaxFlat, netProfit: netProfit, netToSavings: netToSavings,
+      tax: tax, expenses: expenses,
+      afterTax: afterTax, netProfit: netProfit, netToSavings: netToSavings,
       savingsRate: gross > 0 ? netToSavings / gross : 0
     };
   }
   function months(state) { return Object.keys(state.months || {}).sort(); }
   function yearSummary(state) {
     var ms = months(state);
-    var gross = 0, expenses = 0, taxSetAside = 0, netToSavings = 0;
+    var gross = 0, expenses = 0, tax = 0, netToSavings = 0;
     ms.forEach(function (k) {
       var s = monthSummary(state, k);
-      gross += s.gross; expenses += s.expenses; taxSetAside += s.taxSetAside; netToSavings += s.netToSavings;
+      gross += s.gross; expenses += s.expenses; tax += s.tax; netToSavings += s.netToSavings;
     });
     var annualRunRate = weeklyTotal(state) * 52;
-    return { months: ms, gross: gross, expenses: expenses, taxSetAside: taxSetAside, netToSavings: netToSavings, annualRunRate: annualRunRate };
+    return { months: ms, gross: gross, expenses: expenses, tax: tax, netToSavings: netToSavings, annualRunRate: annualRunRate };
   }
 
   /* ---- Net worth ----------------------------------------------------------- */
@@ -255,7 +260,7 @@
     weeklyByDay: weeklyByDay, weeklyTotal: weeklyTotal, weeklyHours: weeklyHours, weeklyBySource: weeklyBySource,
     sourceById: sourceById, accountById: accountById,
     monthIncome: monthIncome, monthIncomeProjected: monthIncomeProjected, monthExpenses: monthExpenses,
-    expenseByCategory: expenseByCategory, monthSummary: monthSummary, months: months, yearSummary: yearSummary,
+    expenseByCategory: expenseByCategory, effectiveRate: effectiveRate, monthSummary: monthSummary, months: months, yearSummary: yearSummary,
     netWorth: netWorth, netWorthProjection: netWorthProjection,
     daysInMonth: daysInMonth, jsToMon: jsToMon,
     money: money, money0: money0, moneyShort: moneyShort, pct: pct, hhmm: hhmm,

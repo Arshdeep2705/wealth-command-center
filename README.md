@@ -11,8 +11,8 @@ A private, offline-first personal **finance + schedule dashboard** — a single-
 - **Income** — earnings by day-of-week and by source, with weekly / monthly / annual breakdowns.
 - **Expenses** — log spending or **import a bank statement** (CSV from ANZ, CommBank, or any bank — works offline; PDF best-effort). Transactions auto-categorise and route to the right month.
 - **Net Worth** — liquid vs pending breakdown, account composition, and a projected-growth curve.
-- **Months** — Jun–Dec 2026 cards with income, expenses, tax set-aside and savings, plus a full-year projection.
-- **Tax** — Australian resident brackets (FY 2025-26, verified against ato.gov.au): income tax, Medicare levy, optional Medicare Levy Surcharge, effective rate, and a tax-set-aside planner.
+- **Months** — Jun–Dec 2026 cards with income, expenses, tax and savings, plus a full-year projection.
+- **Tax** — Australian resident brackets (FY 2025-26, verified against ato.gov.au): income tax, Medicare levy, optional Medicare Levy Surcharge, effective rate, and how much to set aside for tax each month.
 - **Offline PWA** — installable to your home screen, works without a connection after first load.
 
 ## Privacy & data model

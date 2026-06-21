@@ -98,8 +98,6 @@
   function viewOverview() {
     var nw = M.netWorth(state);
     var wk = M.weeklyTotal(state), annual = wk * 52;
-    var setPct = state.settings.taxSetAsidePct || 0;
-    var afterFlat = annual * (1 - setPct / 100);
     var atoTax = M.taxBreakdown(annual, { applyMLS: state.settings.mlsEnabled, hasCover: state.settings.privateHospitalCover });
     var t = todayInfo();
     var ms = M.monthSummary(state, t.monthKey);
@@ -155,13 +153,13 @@
             kpi("Effective hourly", M.money(wk / Math.max(1, M.weeklyHours(state)))) +
           '</div>', "") +
 
-        // after tax
+        // after tax (ATO)
         card(cardH("Projected annual after tax") +
           '<div class="kpi-row">' +
-            kpi("Your set-aside (" + setPct + "%)", M.money0(afterFlat), { color: "var(--good)", sub: "keep " + (100 - setPct) + "%" }) +
-            kpi("ATO estimate", M.money0(atoTax.takeHome), { sub: "eff. " + M.pct(atoTax.effective) }) +
+            kpi("After tax", M.money0(atoTax.takeHome), { color: "var(--good)", sub: "ATO 2025-26" }) +
+            kpi("Tax payable", M.money0(atoTax.totalTax), { color: "var(--warn)", sub: "eff. " + M.pct(atoTax.effective) }) +
           '</div>' +
-          '<p class="muted small">You set aside ' + M.money0(annual * setPct / 100) + '/yr. Real ATO tax ≈ ' + M.money0(atoTax.totalTax) + ' — a ' + M.money0(annual * setPct / 100 - atoTax.totalTax) + ' buffer.</p>') +
+          '<p class="muted small">Australian resident tax — income tax + 2% Medicare levy. Set aside about ' + M.money0(atoTax.totalTax / 12) + '/month for tax.</p>') +
 
         // this month
         card(cardH(M.monthLabel(t.monthKey) + " snapshot", '<a class="mini-link" href="#months">details ›</a>') +
@@ -170,7 +168,7 @@
             kpi("Expenses", M.money0(ms.expenses), { color: ms.expenses ? "var(--bad)" : "var(--muted)" }) +
           '</div>' +
           '<div class="kpi-row">' +
-            kpi("Tax set-aside", M.money0(ms.taxSetAside), { color: "var(--warn)" }) +
+            kpi("Tax (ATO)", M.money0(ms.tax), { color: "var(--warn)" }) +
             kpi("Added to savings", M.money0(ms.netToSavings), { color: "var(--good)" }) +
           '</div>' +
           (ms.expenses === 0 ? '<p class="muted small">No expenses logged yet — import a statement to fill this in.</p>' : '')) +
@@ -374,7 +372,7 @@
           '</div>' +
           '<div class="kpi-row">' +
             kpi("After-tax (ATO)", M.money0(atoTax.takeHome), { color: "var(--good)" }) +
-            kpi("Your 60% keep", M.money0(ys.annualRunRate * (1 - (state.settings.taxSetAsidePct || 0) / 100))) +
+            kpi("To savings · Jun–Dec", M.money0(ys.netToSavings), { color: "var(--good)", sub: "after tax & expenses" }) +
           '</div>', "span-2") +
         '<div class="month-cards span-2">' + rows.map(function (r) {
           var s = r.s;
@@ -384,7 +382,7 @@
             '<dl class="mc-stats">' +
               '<div><dt>Income</dt><dd class="num">' + M.money0(s.gross) + '</dd></div>' +
               '<div><dt>Expenses</dt><dd class="num bad">' + (s.expenses ? M.money0(s.expenses) : "—") + '</dd></div>' +
-              '<div><dt>Tax set-aside</dt><dd class="num warn">' + M.money0(s.taxSetAside) + '</dd></div>' +
+              '<div><dt>Tax (ATO)</dt><dd class="num warn">' + M.money0(s.tax) + '</dd></div>' +
               '<div><dt>To savings</dt><dd class="num good">' + M.money0(s.netToSavings) + '</dd></div>' +
             '</dl></div>';
         }).join("") + '</div>' +
@@ -396,8 +394,6 @@
     var annual = M.weeklyTotal(state) * 52;
     var opts = { applyMLS: state.settings.mlsEnabled, hasCover: state.settings.privateHospitalCover };
     var tb = M.taxBreakdown(annual, opts);
-    var setPct = state.settings.taxSetAsidePct || 0;
-    var setAside = annual * setPct / 100;
     var brackets = M.TAX_BRACKETS.map(function (b, i) {
       var within = annual > b.min;
       var inThis = annual > b.min && annual <= (b.max === Infinity ? 1e15 : b.max);
@@ -424,18 +420,16 @@
             kpi("Marginal rate", M.pct(tb.marginal, 0)) +
           '</div>' +
           (tb.mls ? '<p class="muted small">Includes Medicare Levy Surcharge ' + M.money0(tb.mls) + ' (no private hospital cover). Toggle in Settings.</p>' : '')) +
-        card(cardH("Your set-aside plan") +
+        card(cardH("Set aside for tax") +
           '<div class="kpi-row">' +
-            kpi("You set aside (" + setPct + "%)", M.money0(setAside), { color: "var(--warn)" }) +
-            kpi("Real ATO tax", M.money0(tb.totalTax)) +
+            kpi("Per month", M.money0(tb.totalTax / 12), { color: "var(--warn)" }) +
+            kpi("Per week", M.money0(tb.totalTax / 52)) +
           '</div>' +
-          '<div class="buffer ' + (setAside >= tb.totalTax ? "ok" : "short") + '">' +
-            (setAside >= tb.totalTax
-              ? '<b>' + M.money0(setAside - tb.totalTax) + '</b> safety buffer — you set aside more than the ATO will likely take. 👍'
-              : '<b>' + M.money0(tb.totalTax - setAside) + '</b> short — consider lifting your set-aside to ' + Math.ceil(tb.effective * 100) + '%.') +
+          '<div class="kpi-row">' +
+            kpi("Per year", M.money0(tb.totalTax)) +
+            kpi("Effective rate", M.pct(tb.effective)) +
           '</div>' +
-          '<label class="field"><span>Set-aside %</span><input type="range" min="0" max="50" value="' + setPct + '" data-setaside></label>' +
-          '<p class="muted small">Set aside ' + M.money0(setAside / 12) + '/month into a separate “tax” bucket and you’ll never be caught out.</p>') +
+          '<div class="buffer ok">Move <b>' + M.money0(tb.totalTax / 12) + '</b> into a separate “tax” account each month and your ATO bill is fully covered, with the rest free to spend or save.</div>') +
         card(cardH("Bracket breakdown") +
           '<div class="table-wrap"><table class="tbl"><thead><tr><th>Bracket</th><th class="r">Rate</th><th class="r">Your $ in band</th><th class="r">Tax</th></tr></thead><tbody>' +
           brackets +
@@ -456,9 +450,9 @@
           '<div class="set-row"><div><strong>Import bank statement</strong><p class="muted small">CSV (ANZ / CommBank / any) or PDF.</p></div><button class="pill-btn" data-act="import-statement">' + icoUpload() + ' Statement</button></div>' +
           '<div class="set-row danger"><div><strong>Reset to demo</strong><p class="muted small">Clears your data from this browser.</p></div><button class="pill-btn danger" data-act="reset">Reset</button></div>') +
         card(cardH("Tax & assumptions") +
-          '<label class="field"><span>Tax set-aside %</span><input type="number" min="0" max="60" value="' + (s.taxSetAsidePct || 0) + '" data-set="taxSetAsidePct"></label>' +
-          '<label class="check"><input type="checkbox" data-set="privateHospitalCover" ' + (s.privateHospitalCover ? "checked" : "") + '><span>I have private hospital cover (avoids Medicare Levy Surcharge)</span></label>' +
-          '<label class="check"><input type="checkbox" data-set="mlsEnabled" ' + (s.mlsEnabled ? "checked" : "") + '><span>Apply Medicare Levy Surcharge in estimates</span></label>') +
+          '<p class="muted small" style="margin-bottom:14px">All tax figures use the Australian resident brackets for FY2025-26 (income tax + 2% Medicare levy). Income, after-tax and savings are all calculated on this.</p>' +
+          '<label class="check"><input type="checkbox" data-set="privateHospitalCover" ' + (s.privateHospitalCover ? "checked" : "") + '><span>I have private hospital cover (avoids the Medicare Levy Surcharge)</span></label>' +
+          '<label class="check"><input type="checkbox" data-set="mlsEnabled" ' + (s.mlsEnabled ? "checked" : "") + '><span>Include Medicare Levy Surcharge in estimates (applies to high earners without hospital cover)</span></label>') +
         card(cardH("Income sources") +
           '<div class="acct-list">' + (state.incomeSources || []).map(function (src) {
             var weekly = M.weeklyBySource(state)[src.id] || 0;
@@ -657,11 +651,7 @@
       if (el.hasAttribute("data-set")) {
         var k = el.getAttribute("data-set");
         state.settings[k] = el.type === "checkbox" ? el.checked : (isNaN(+el.value) ? el.value : +el.value);
-        commit(); if (k !== "taxSetAsidePct") render();
-      }
-      if (el.hasAttribute("data-setaside")) {
-        state.settings.taxSetAsidePct = +el.value; commit();
-        var hash = location.hash; render(); // re-render tax view
+        commit(); render();
       }
     });
     window.addEventListener("hashchange", render);

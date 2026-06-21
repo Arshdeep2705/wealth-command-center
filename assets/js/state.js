@@ -19,7 +19,7 @@
     isDemo: true,
     fyLabel: "FY 2025-26",
     horizon: { startMonth: "2026-06", endMonth: "2026-12" },
-    settings: { taxSetAsidePct: 40, weekStartsOn: 1, theme: "command-dark", privateHospitalCover: false, mlsEnabled: false },
+    settings: { weekStartsOn: 1, theme: "command-dark", privateHospitalCover: false, mlsEnabled: false },
     accounts: [
       { id: "a1", name: "Everyday bank", short: "Bank", type: "bank", liquid: true, balance: 12000, note: "Demo account", color: "#2f7fff" },
       { id: "a2", name: "Cash", short: "Cash", type: "cash", liquid: true, balance: 1500, note: "", color: "#34d399" },
@@ -63,7 +63,8 @@
     s.owner = s.owner || "You";
     s.fyLabel = s.fyLabel || "FY 2025-26";
     s.horizon = s.horizon || { startMonth: "2026-06", endMonth: "2026-12" };
-    s.settings = Object.assign({ taxSetAsidePct: 40, weekStartsOn: 1, theme: "command-dark", privateHospitalCover: false, mlsEnabled: false }, s.settings || {});
+    s.settings = Object.assign({ weekStartsOn: 1, theme: "command-dark", privateHospitalCover: false, mlsEnabled: false }, s.settings || {});
+    delete s.settings.taxSetAsidePct;
     s.accounts = Array.isArray(s.accounts) ? s.accounts : [];
     s.incomeSources = Array.isArray(s.incomeSources) ? s.incomeSources : [];
     s.rates = s.rates || {};
