@@ -67,6 +67,9 @@
     delete s.settings.taxSetAsidePct;
     s.accounts = Array.isArray(s.accounts) ? s.accounts : [];
     s.incomeSources = Array.isArray(s.incomeSources) ? s.incomeSources : [];
+    // sanitize colour fields (rendered into style/SVG attributes) to block HTML/attribute injection
+    s.accounts.forEach(function (a) { if (a) a.color = safeColor(a.color); });
+    s.incomeSources.forEach(function (x) { if (x) x.color = safeColor(x.color); });
     s.rates = s.rates || {};
     s.shifts = Array.isArray(s.shifts) ? s.shifts : [];
     s.transactions = Array.isArray(s.transactions) ? s.transactions : [];
@@ -120,6 +123,7 @@
     return out;
   }
   function parseMonth(str) { var p = (str || "2026-06").split("-"); return { y: +p[0], m: +p[1] }; }
+  function safeColor(c) { c = String(c == null ? "" : c); return /^(#[0-9a-fA-F]{3,8}|rgba?\([\d.,\s%]+\)|var\(--[\w-]+\)|[a-z]+)$/.test(c) ? c : "#818cf8"; }
 
   /* ---- Persistence --------------------------------------------------------- */
   function load() {
@@ -156,6 +160,27 @@
     try { global.localStorage.removeItem(STORAGE_KEY); } catch (e) {}
     return load();
   }
+  // Conflict merge: union of both devices' data so nothing added on either side is lost.
+  // Starts from `local` (this device's latest), then adds any entities only present on the server.
+  // Same-id conflicts keep the local version (this device just edited it). Avoids silent data loss.
+  function merge(local, server) {
+    if (!server) return local; if (!local) return server;
+    local = normalize(local); server = normalize(server);
+    function unionById(a, b) {
+      var seen = {}; (a || []).forEach(function (x) { if (x && x.id != null) seen[x.id] = true; });
+      (b || []).forEach(function (x) { if (x && x.id != null && !seen[x.id]) { a.push(x); seen[x.id] = true; } });
+      return a;
+    }
+    local.accounts = unionById(local.accounts, server.accounts);
+    local.incomeSources = unionById(local.incomeSources, server.incomeSources);
+    local.shifts = unionById(local.shifts, server.shifts);
+    var sm = server.months || {};
+    Object.keys(sm).forEach(function (k) {
+      if (!local.months[k]) local.months[k] = sm[k];
+      else local.months[k].entries = unionById(local.months[k].entries || [], sm[k].entries || []);
+    });
+    return normalize(local);
+  }
 
   global.AppState = {
     STORAGE_KEY: STORAGE_KEY,
@@ -167,6 +192,7 @@
     load: load,
     save: save,
     replace: replace,
+    merge: merge,
     exportJSON: exportJSON,
     reset: reset
   };

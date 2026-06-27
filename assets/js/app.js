@@ -20,7 +20,7 @@
   function $(s, r) { return (r || document).querySelector(s); }
   function $$(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
   function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
-  function commit() { S.save(state); if (global.Sync && Sync.enabled() && Sync.hasLocalPin()) Sync.queuePush(state); }
+  function commit() { var ok = S.save(state); if (!ok) toast("⚠ Couldn’t save on this device — storage may be full"); if (global.Sync && Sync.enabled() && Sync.hasLocalPin()) Sync.queuePush(state); }
   function delta(n) { return (n >= 0 ? "+" : "") + M.money0(n); }
 
   function todayInfo() {
@@ -131,7 +131,7 @@
           '<div class="hero">' +
             '<div class="hero-l">' +
               '<span class="eyebrow">Total net worth</span>' +
-              '<div class="hero-num" data-count="' + nw.total + '">' + M.money0(nw.total) + '</div>' +
+              '<div class="hero-num">' + M.money0(nw.total) + '</div>' +
               '<div class="hero-split">' +
                 '<span><i class="dot" style="background:var(--good)"></i>Liquid now <b>' + M.money0(nw.liquid) + '</b></span>' +
                 '<span><i class="dot" style="background:var(--warn)"></i>Pending / future <b>' + M.money0(nw.pending) + '</b></span>' +
@@ -208,22 +208,30 @@
     }).join("") + '</div>';
 
     var cols = byDay.map(function (d) {
-      var blocks = d.blocks.slice();
-      // lane assignment for overlaps
-      var lanes = [];
+      var blocks = d.blocks.slice().sort(function (a, b) { return a.start - b.start; });
+      // group into connected overlap CLUSTERS so a single overlap doesn't shrink the whole day's blocks
+      var clusters = [], cur = null;
       blocks.forEach(function (b) {
-        var placed = false;
-        for (var i = 0; i < lanes.length; i++) { if (b.start >= lanes[i] - 0.001) { b._lane = i; lanes[i] = b.end; placed = true; break; } }
-        if (!placed) { b._lane = lanes.length; lanes.push(b.end); }
+        if (!cur || b.start >= cur.end - 0.001) { cur = { end: b.end, items: [b], lanes: [] }; clusters.push(cur); }
+        else { cur.items.push(b); cur.end = Math.max(cur.end, b.end); }
+        b._cluster = cur;
       });
-      var laneCount = Math.max(1, lanes.length);
+      clusters.forEach(function (cl) {
+        cl.items.forEach(function (b) {
+          var placed = false;
+          for (var i = 0; i < cl.lanes.length; i++) { if (b.start >= cl.lanes[i] - 0.001) { b._lane = i; cl.lanes[i] = b.end; placed = true; break; } }
+          if (!placed) { b._lane = cl.lanes.length; cl.lanes.push(b.end); }
+        });
+        cl.laneCount = Math.max(1, cl.lanes.length);
+      });
       var blocksHtml = blocks.map(function (b) {
         var s = M.sourceById(state, b.sourceId);
         var top = b.start * HOURPX, hgt = Math.max(20, (b.end - b.start) * HOURPX);
+        var laneCount = (b._cluster && b._cluster.laneCount) || 1;
         var w = 100 / laneCount, left = b._lane * w;
         var tall = hgt > 52;
         return '<div class="sch-block" style="top:' + top + 'px;height:' + (hgt - 3) + 'px;left:calc(' + left + '% + 2px);width:calc(' + w + '% - 4px);--c:' + s.color + '" ' +
-          'data-shift="' + b.id + '" title="' + esc(s.name + " · " + b.label + " · " + M.hhmm(b.start) + "–" + M.hhmm(b.end) + " · " + M.money(b.pay) + " (" + b.rateNote + ")") + '">' +
+          'data-shift="' + esc(b.id) + '" title="' + esc(s.name + " · " + b.label + " · " + M.hhmm(b.start) + "–" + M.hhmm(b.end) + " · " + M.money(b.pay) + " (" + b.rateNote + ")") + '">' +
           '<span class="sb-name">' + esc(b.label) + (b.phNote ? ' <em class="ph">PH</em>' : '') + '</span>' +
           (tall ? '<span class="sb-src">' + esc(s.short) + '</span><span class="sb-time">' + M.hhmm(b.start) + "–" + M.hhmm(b.end) + '</span>' : '') +
           '<span class="sb-pay">' + M.money0(b.pay) + '</span></div>';
@@ -510,14 +518,18 @@
   function num(v) { if (typeof v === "number") return v; if (typeof v === "string" && v.indexOf(":") >= 0) return hhmmToDec(v); var n = parseFloat(v); return isNaN(n) ? null : n; }
   function slug(s) { return (s || "x").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 16); }
   function resolveAccount(ref) {
-    if (!ref) return null; var r = String(ref).toLowerCase();
-    return (state.accounts || []).find(function (a) { return a.id === ref || a.name.toLowerCase() === r || (a.short || "").toLowerCase() === r; }) ||
-      (state.accounts || []).find(function (a) { return a.name.toLowerCase().indexOf(r) >= 0 || r.indexOf(a.name.toLowerCase()) >= 0; }) || null;
+    if (!ref) return null; var r = String(ref).toLowerCase().trim();
+    var exact = (state.accounts || []).find(function (a) { return a.id === ref || a.name.toLowerCase() === r || (a.short || "").toLowerCase() === r; });
+    if (exact) return exact;
+    var fuzzy = (state.accounts || []).filter(function (a) { return a.name.toLowerCase().indexOf(r) >= 0 || r.indexOf(a.name.toLowerCase()) >= 0; });
+    return fuzzy.length === 1 ? fuzzy[0] : null; // refuse to guess when ambiguous
   }
   function resolveSource(ref) {
-    if (!ref) return null; var r = String(ref).toLowerCase();
-    return (state.incomeSources || []).find(function (s) { return s.id === ref || s.name.toLowerCase() === r; }) ||
-      (state.incomeSources || []).find(function (s) { return s.name.toLowerCase().indexOf(r) >= 0; }) || null;
+    if (!ref) return null; var r = String(ref).toLowerCase().trim();
+    var exact = (state.incomeSources || []).find(function (s) { return s.id === ref || s.name.toLowerCase() === r; });
+    if (exact) return exact;
+    var fuzzy = (state.incomeSources || []).filter(function (s) { return s.name.toLowerCase().indexOf(r) >= 0 || r.indexOf(s.name.toLowerCase()) >= 0; });
+    return fuzzy.length === 1 ? fuzzy[0] : null;
   }
   function expandShift(sh, sourceId, biz, name, idx) {
     var day = +sh.day || 0, pay = +sh.pay || 0;
@@ -537,7 +549,7 @@
       case "remove_income_source": return "🗑️ Remove income <b>" + esc(op.name) + "</b>";
       case "add_account": return "➕ Account <b>" + esc(op.name) + "</b> (" + esc(op.type || "bank") + ") · " + M.money0(op.balance || 0);
       case "update_account": var ac = resolveAccount(op.name); return "🏦 " + esc(ac ? ac.name : op.name) + " " + (op.set != null ? "→ " + M.money0(op.set) : ((op.delta >= 0 ? "+" : "") + M.money0(op.delta || 0)));
-      case "add_transaction": return (op.type === "in" ? "➕ Income " : "➖ Expense ") + "<b>" + M.money0(op.amount) + "</b> · " + esc(op.description || "") + " (" + esc(op.date || "") + ")";
+      case "add_transaction": var tk = (op.date || "").slice(0, 7); var oor = !state.months[tk]; return (op.type === "in" ? "➕ Income " : "➖ Expense ") + "<b>" + M.money0(op.amount) + "</b> · " + esc(op.description || "") + " (" + esc(op.date || "") + ")" + (oor ? ' <em style="color:var(--warn)">⚠ outside Jun–Dec 2026 — will be skipped</em>' : "");
       case "set_setting": return "⚙️ " + esc(op.key) + " = " + esc(String(op.value));
       default: return "• " + esc(op.op || "change");
     }
@@ -549,7 +561,8 @@
         if (op.op === "add_income_source") {
           var acc = resolveAccount(op.account) || (state.accounts || [])[0];
           var id = "src_" + slug(op.name) + "_" + Date.now().toString(36).slice(-3) + n;
-          state.incomeSources.push({ id: id, name: op.name, short: op.name.length > 14 ? op.name.slice(0, 12) + "…" : op.name, account: acc ? acc.id : null, color: op.color || catColor(state.incomeSources.length), businessIncome: !!op.businessIncome, kind: op.businessIncome ? "business" : "work", note: op.note || "" });
+          var sc = (typeof op.color === "string" && /^#[0-9a-fA-F]{3,8}$/.test(op.color)) ? op.color : catColor(state.incomeSources.length);
+          state.incomeSources.push({ id: id, name: op.name, short: op.name.length > 14 ? op.name.slice(0, 12) + "…" : op.name, account: acc ? acc.id : null, color: sc, businessIncome: !!op.businessIncome, kind: op.businessIncome ? "business" : "work", note: op.note || "" });
           (op.shifts || []).forEach(function (sh, i) { expandShift(sh, id, !!op.businessIncome, op.name, i).forEach(function (b) { state.shifts.push(b); }); });
           n++;
         } else if (op.op === "update_income_source") {
@@ -573,14 +586,15 @@
           n++;
         } else if (op.op === "update_account") {
           var ac2 = resolveAccount(op.name); if (!ac2) return;
-          if (op.set != null) ac2.balance = +op.set; else if (op.delta != null) ac2.balance = (+ac2.balance || 0) + (+op.delta);
-          n++;
+          var v = (op.set != null) ? +op.set : (op.delta != null ? ((+ac2.balance || 0) + (+op.delta)) : null);
+          if (v != null && isFinite(v)) { ac2.balance = v; n++; }
         } else if (op.op === "add_transaction") {
-          var key = (op.date || "").slice(0, 7); if (!state.months[key]) return;
-          state.months[key].entries.push({ id: "e_" + Date.now().toString(36) + n, date: op.date, description: op.description || "", amount: Math.abs(+op.amount || 0), type: op.type === "in" ? "in" : "out", category: op.type === "in" ? "Income" : (op.category || "Other"), note: op.note || "" });
+          var key = (op.date || "").slice(0, 7); if (!state.months[key]) return; // outside horizon (preview warns)
+          var amt = Math.abs(+op.amount || 0); if (!isFinite(amt) || !amt) return;
+          state.months[key].entries.push({ id: "e_" + Date.now().toString(36) + n, date: op.date, description: op.description || "", amount: amt, type: op.type === "in" ? "in" : "out", category: op.type === "in" ? "Income" : (op.category || "Other"), note: op.note || "" });
           n++;
         } else if (op.op === "set_setting") {
-          state.settings[op.key] = op.value; n++;
+          if (op.key === "privateHospitalCover" || op.key === "mlsEnabled") { state.settings[op.key] = (op.value === true || op.value === "true"); n++; }
         }
       } catch (e) { console.warn("op failed", op, e); }
     });
@@ -648,10 +662,14 @@
 
   /* =============================================================== modals */
   function modal(title, bodyHtml, footHtml) {
-    $("#modalRoot").innerHTML = '<div class="overlay" data-close-modal>' +
+    $("#modalRoot").innerHTML = '<div class="overlay">' +
       '<div class="dialog" role="dialog" aria-modal="true"><div class="dlg-h"><h3>' + esc(title) + '</h3><button class="x-btn" data-close-modal>' + icoX() + '</button></div>' +
       '<div class="dlg-b">' + bodyHtml + '</div>' + (footHtml ? '<div class="dlg-f">' + footHtml + '</div>' : '') + '</div></div>';
-    requestAnimationFrame(function () { var o = $(".overlay"); if (o) o.classList.add("show"); });
+    requestAnimationFrame(function () {
+      var o = $(".overlay"); if (!o) return; o.classList.add("show");
+      var fi = o.querySelector(".dlg-b input[type=text], .dlg-b input[type=number], .dlg-b input[type=password], .dlg-b textarea");
+      if (fi) { try { fi.focus({ preventScroll: false }); } catch (e) { fi.focus(); } }
+    });
   }
   function closeModal() { var o = $(".overlay"); if (o) { o.classList.remove("show"); setTimeout(function () { $("#modalRoot").innerHTML = ""; }, 180); } }
 
@@ -668,11 +686,13 @@
     if (e && e.category && e.category !== "Income" && cats.indexOf(e.category) < 0) cats.push(e.category);
     e = e || { id: "e_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), date: activeMonth + "-01", description: "", amount: 0, type: "out", category: cats[0] || "Other", note: "" };
     var isIn = e.type === "in";
+    var mons = M.months(state), minD = (mons[0] || "2026-06") + "-01";
+    var lastM = mons[mons.length - 1] || "2026-12", lp = lastM.split("-"), maxD = lastM + "-" + String(M.daysInMonth(+lp[0], +lp[1])).padStart(2, "0");
     modal(isNew ? "Add transaction" : "Edit transaction", '<form id="entryForm" class="form">' +
       '<input type="hidden" name="id" value="' + esc(e.id) + '">' +
       '<div class="type-toggle"><label class="tt ' + (!isIn ? "on out" : "") + '"><input type="radio" name="type" value="out" ' + (!isIn ? "checked" : "") + '>Money out</label>' +
         '<label class="tt ' + (isIn ? "on in" : "") + '"><input type="radio" name="type" value="in" ' + (isIn ? "checked" : "") + '>Money in</label></div>' +
-      '<div class="form-2"><label class="field"><span>Date</span><input type="date" name="date" value="' + esc(e.date) + '" required></label>' +
+      '<div class="form-2"><label class="field"><span>Date</span><input type="date" name="date" value="' + esc(e.date) + '" min="' + minD + '" max="' + maxD + '" required></label>' +
       '<label class="field"><span>Amount ($)</span><input type="number" name="amount" step="0.01" min="0" value="' + (e.amount || "") + '" placeholder="0.00" required></label></div>' +
       '<label class="field"><span>Description</span><input type="text" name="description" value="' + esc(e.description) + '" placeholder="e.g. Woolworths, or ‘car repair’" required></label>' +
       '<label class="field"><span>Category</span><select name="category">' + cats.map(function (c) { return '<option ' + (e.category === c ? "selected" : "") + '>' + esc(c) + '</option>'; }).join("") + '</select></label>' +
@@ -688,8 +708,9 @@
   }
   function saveEntry() {
     var f = $("#entryForm"); if (!f || !f.reportValidity()) return;
-    var amt = Math.abs(parseFloat(f.amount.value) || 0); if (!amt) return;
-    var d = f.date.value, key = d.slice(0, 7); if (!state.months[key]) key = activeMonth;
+    var amt = Math.abs(parseFloat(f.amount.value) || 0); if (!amt) { toast("Enter an amount"); return; }
+    var d = f.date.value, key = d.slice(0, 7);
+    if (!state.months[key]) { toast("Date must be within " + M.monthLabel(M.months(state)[0]) + "–" + M.monthLabel(M.months(state).slice(-1)[0])); return; }
     var type = f.type.value === "in" ? "in" : "out";
     var obj = { id: f.id.value, date: d, description: f.description.value.trim(), amount: amt, type: type, category: type === "in" ? "Income" : f.category.value, note: (f.note.value || "").trim() };
     // remove any existing copy (date/month may have changed), then add to the right month
@@ -760,7 +781,7 @@
         '<input type="hidden" name="id" value="' + esc(src.id) + '">' +
         '<label class="field"><span>Name</span><input name="name" value="' + esc(src.name) + '" placeholder="e.g. Cafe job" required></label>' +
         '<div class="form-2">' +
-          '<label class="field"><span>Pays into</span><select name="account">' + accts.map(function (a) { return '<option value="' + a.id + '" ' + (src.account === a.id ? "selected" : "") + '>' + esc(a.name) + '</option>'; }).join("") + '</select></label>' +
+          '<label class="field"><span>Pays into</span><select name="account">' + accts.map(function (a) { return '<option value="' + esc(a.id) + '" ' + (src.account === a.id ? "selected" : "") + '>' + esc(a.name) + '</option>'; }).join("") + '</select></label>' +
           '<label class="field"><span>Colour</span><input type="color" name="color" value="' + (src.color || "#34e3ff") + '"></label>' +
         '</div>' +
         '<label class="check"><input type="checkbox" name="biz" id="srcBiz" ' + (biz ? "checked" : "") + '><span>Passive / business income — paid per day, no fixed clock hours (like a daily profit)</span></label>' +
@@ -782,8 +803,8 @@
     });
     rows.addEventListener("input", function (e) {
       var row = e.target.closest(".shift-row"); if (!row) return;
-      // auto-fill pay from rate × hours
-      if (e.target.classList.contains("sr-rate") || e.target.classList.contains("sr-start") || e.target.classList.contains("sr-end")) {
+      // auto-fill pay ONLY when the rate field is edited — never overwrite a manually typed pay
+      if (e.target.classList.contains("sr-rate")) {
         var rate = parseFloat((row.querySelector(".sr-rate") || {}).value);
         var st = hhmmToDec((row.querySelector(".sr-start") || {}).value), en = hhmmToDec((row.querySelector(".sr-end") || {}).value);
         if (rate && st != null && en != null) { var hrs = (en <= st ? en + 24 : en) - st; row.querySelector(".sr-pay").value = (hrs * rate).toFixed(2); }
@@ -811,20 +832,26 @@
     var f = $("#srcForm"); if (!f || !f.reportValidity()) return;
     var biz = $("#srcBiz").checked;
     var id = f.id.value, name = f.name.value.trim();
-    var rows = readShiftRows().filter(function (r) { return (+r.pay || 0) > 0 || (!biz && r.start != null); });
-    if (!rows.length) { toast("Add at least one shift with pay"); return; }
+    var bad = false;
+    var rows = readShiftRows().filter(function (r) {
+      var hasPay = (+r.pay || 0) > 0;
+      if (biz) return hasPay;
+      var hasTime = r.start != null && r.end != null;
+      if (hasTime && hasPay) return true;
+      if (hasTime || hasPay) bad = true; // partial row — don't drop silently
+      return false;
+    });
+    if (bad) { toast(biz ? "Each day needs an amount" : "Each shift needs a start time, end time and pay"); return; }
+    if (!rows.length) { toast("Add at least one " + (biz ? "day with an amount" : "shift with time & pay")); return; }
     // upsert source
     var srcObj = { id: id, name: name, short: name.length > 14 ? name.slice(0, 12) + "…" : name, account: f.account.value, color: f.color.value, businessIncome: biz, kind: biz ? "business" : "work", note: f.note.value.trim() };
     var i = (state.incomeSources || []).findIndex(function (s) { return s.id === id; });
     if (i >= 0) state.incomeSources[i] = Object.assign(state.incomeSources[i], srcObj); else state.incomeSources.push(srcObj);
-    // replace this source's shifts
+    // replace this source's shifts — route through expandShift so overnight shifts split at midnight (same as the AI path)
     state.shifts = (state.shifts || []).filter(function (s) { return s.sourceId !== id; });
     rows.forEach(function (r, n) {
-      state.shifts.push({
-        id: id + "_s" + n, sourceId: id, day: r.day,
-        start: biz ? null : r.start, end: biz ? null : r.end,
-        pay: +r.pay || 0, label: biz ? name : (r.label || name), rateNote: "", kind: biz ? "business" : "shift"
-      });
+      expandShift({ day: r.day, start: r.start, end: r.end, pay: r.pay, label: r.label }, id, biz, name, n)
+        .forEach(function (b) { state.shifts.push(b); });
     });
     commit(); closeModal(); render(); toast("“" + name + "” saved — dashboard updated ✓");
   }
@@ -899,20 +926,26 @@
     $$("[data-imp-cat]").forEach(function (sel) { txns[+sel.getAttribute("data-imp-cat")].category = sel.value; });
     $$("[data-imp-desc]").forEach(function (inp) { txns[+inp.getAttribute("data-imp-desc")].description = inp.value; });
     $$("[data-imp-note]").forEach(function (inp) { txns[+inp.getAttribute("data-imp-note")].note = inp.value; });
-    var added = 0, skipped = 0;
+    var added = 0, skipped = 0, dupes = 0;
     txns.forEach(function (t) {
       if (!t.include) return;
       var key = t.date.slice(0, 7);
       if (!state.months[key]) { skipped++; return; } // outside Jun–Dec 2026 horizon
       var inn = t.amount > 0;
+      var desc = (t.description || "").trim(), amt = Math.abs(t.amount), type = inn ? "in" : "out";
+      // skip duplicates already logged for this month (same date + amount + type + description)
+      var dup = (state.months[key].entries || []).some(function (e) {
+        return e.date === t.date && Math.abs(+e.amount || 0) === amt && e.type === type && (e.description || "").trim().toLowerCase() === desc.toLowerCase();
+      });
+      if (dup) { dupes++; return; }
       state.months[key].entries.push({
-        id: t.id, date: t.date, description: (t.description || "").trim(), amount: Math.abs(t.amount),
-        type: inn ? "in" : "out", category: inn ? "Income" : (t.category || "Other"), note: (t.note || "").trim()
+        id: t.id, date: t.date, description: desc, amount: amt,
+        type: type, category: inn ? "Income" : (t.category || "Other"), note: (t.note || "").trim()
       });
       added++;
     });
     commit(); closeModal(); render();
-    toast(added + " imported" + (skipped ? " · " + skipped + " skipped (outside Jun–Dec)" : "") + " ✓");
+    toast(added + " imported" + (dupes ? " · " + dupes + " duplicate" + (dupes > 1 ? "s" : "") + " skipped" : "") + (skipped ? " · " + skipped + " outside range" : "") + " ✓");
   }
 
   /* ---- change passcode ---- */
@@ -959,6 +992,8 @@
   /* ============================================================== events */
   function bind() {
     document.addEventListener("click", function (e) {
+      // backdrop close: ONLY when the dark backdrop itself is tapped (never bubbled from a field/button inside)
+      if (e.target.classList && e.target.classList.contains("overlay")) { closeModal(); return; }
       var t = e.target.closest("[data-act],[data-close-modal],[data-month],[data-del-entry],[data-edit-entry],[data-edit-acct],[data-del-acct],[data-edit-source],[data-del-source],[data-month-go],[data-shift]");
       if (!t) return;
       if (t.hasAttribute("data-close-modal")) { closeModal(); return; }
@@ -988,7 +1023,7 @@
         case "ai-key": aiKeyModal(); break;
         case "ai-savekey": aiSaveKey(); break;
         case "commit-import": commitImport(); break;
-        case "reset": if (confirm("Reset to demo data? Your entries in this browser will be cleared.")) { state = S.reset(); render(); toast("Reset done"); } break;
+        case "reset": if (confirm("Reset to demo data? This clears this device and disconnects it from cloud sync (your cloud data is NOT changed).")) { if (global.Sync && Sync.enabled() && Sync.hasLocalPin()) Sync.signOut(); state = S.reset(); render(); toast("Reset done"); } break;
         case "sync-pull": if (global.Sync) { updateSyncBadge("syncing"); Sync.pull().then(function (b) { if (b && b.data) { state = S.replace(b.data); render(); } updateSyncBadge("synced"); toast("Up to date ✓"); }).catch(function () { updateSyncBadge("offline"); toast("Couldn’t refresh"); }); } break;
         case "sync-link": showLock("unlock"); break;
         case "change-pin": changePinModal(); break;
@@ -1003,7 +1038,8 @@
       if (el.hasAttribute("data-set")) {
         var k = el.getAttribute("data-set");
         state.settings[k] = el.type === "checkbox" ? el.checked : (isNaN(+el.value) ? el.value : +el.value);
-        commit(); render();
+        commit();
+        var v = $("#view"), y = v ? v.scrollTop : 0; render(); var v2 = $("#view"); if (v2) v2.scrollTop = y; // keep scroll position
       }
     });
     window.addEventListener("hashchange", render);
@@ -1074,14 +1110,27 @@
   function setupSync() {
     if (!(global.Sync && Sync.enabled())) return;          // pure offline build
     Sync.on("status", updateSyncBadge);
-    Sync.on("remote", function (b) { if (b && b.data) { state = S.replace(b.data); render(); toast("Updated from another device"); } });
-    Sync.on("refresh", function () { Sync.pull().then(function (b) { if (b && b.data) { state = S.replace(b.data); render(); updateSyncBadge("synced"); } }).catch(function () {}); });
+    // Conflict: merge this device's edits with the server copy (union — no loss), then re-push.
+    Sync.on("conflict", function (c) {
+      try {
+        var merged = S.merge(c.local || state, c.server);
+        state = S.replace(merged); render();
+        toast("Merged changes from your other device");
+        Sync.push(state).catch(function () {});
+      } catch (e) { console.warn("merge failed", e); }
+    });
+    Sync.on("refresh", function () { if (Sync.isDirty()) { Sync.flush(); return; } Sync.pull().then(function (b) { if (b && b.data) { state = S.replace(b.data); render(); updateSyncBadge("synced"); } }).catch(function () {}); });
     Sync.on("locked", function () { showLock("unlock"); });
 
     if (Sync.hasLocalPin()) {
       updateSyncBadge("syncing");
-      Sync.pull().then(function (b) { if (b && b.data) { state = S.replace(b.data); render(); } updateSyncBadge("synced"); })
-        .catch(function (e) { if (e && e.code === 401) showLock("unlock"); else updateSyncBadge("offline"); });
+      if (Sync.isDirty()) {
+        // unsynced local edits exist — push them (server merge resolves any conflict). Never pull-over them.
+        Sync.push(state).then(function () { updateSyncBadge("synced"); }).catch(function (e) { if (e && e.code === 401) showLock("unlock"); else updateSyncBadge("offline"); });
+      } else {
+        Sync.pull().then(function (b) { if (b && b.data) { state = S.replace(b.data); render(); } updateSyncBadge("synced"); })
+          .catch(function (e) { if (e && e.code === 401) showLock("unlock"); else updateSyncBadge("offline"); });
+      }
     } else {
       Sync.status().then(function (st) { showLock(st && st.hasPin ? "unlock" : "setup"); })
         .catch(function () { updateSyncBadge("offline"); }); // backend unreachable → use local cache
@@ -1114,7 +1163,7 @@
       if (pin.length < 4) return fail("Passcode must be at least 4 characters.");
       if (setup) { var p2 = (document.getElementById("pinInput2").value || "").trim(); if (pin !== p2) return fail("Passcodes don’t match."); }
       go.disabled = true; go.textContent = "Working…";
-      (setup ? Sync.setup(pin, state) : Sync.unlock(pin)).then(function (b) {
+      (setup ? Sync.setup(pin, state.isDemo ? null : state) : Sync.unlock(pin)).then(function (b) {
         if (b && b.data) state = S.replace(b.data);
         hideLock(); render(); updateSyncBadge("synced");
         toast(setup ? "Synced ✓ Your data is now on all your devices" : "Unlocked ✓");

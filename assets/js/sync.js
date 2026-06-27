@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
   var CFG = global.WCC_CONFIG || {};
-  var PIN_KEY = "wcc_pin", BASE_KEY = "wcc_base_ts";
+  var PIN_KEY = "wcc_pin", BASE_KEY = "wcc_base_ts", DIRTY_KEY = "wcc_dirty";
   var listeners = {}, dirty = false, pushTimer = null, lastData = null, baseUpdatedAt = null, inflight = false;
 
   function on(ev, fn) { (listeners[ev] = listeners[ev] || []).push(fn); }
@@ -54,6 +54,7 @@
       return r.body;
     });
   }
+  function markDirty(d) { dirty = d; if (d) lsSet(DIRTY_KEY, "1"); else lsDel(DIRTY_KEY); }
   function pushNow(data) {
     if (!hasLocalPin()) return Promise.reject(locked());
     lastData = data; inflight = true; emit("status", "syncing");
@@ -61,18 +62,20 @@
       inflight = false;
       if (r.status === 401) { lsDel(PIN_KEY); emit("status", "locked"); emit("locked"); throw locked(); }
       if (r.status === 409 && r.body.conflict) {
+        // Server has a newer copy. DO NOT discard local edits — hand both to the app to merge & re-push.
         baseUpdatedAt = r.body.updated_at; lsSet(BASE_KEY, baseUpdatedAt || "");
-        dirty = false; emit("remote", r.body); emit("status", "synced");
+        emit("status", "syncing");
+        emit("conflict", { server: r.body.data, local: lastData });
         return { conflict: true, data: r.body.data };
       }
       if (r.status !== 200) { emit("status", "error"); throw err(r); }
-      baseUpdatedAt = r.body.updated_at; lsSet(BASE_KEY, baseUpdatedAt || ""); dirty = false;
+      baseUpdatedAt = r.body.updated_at; lsSet(BASE_KEY, baseUpdatedAt || ""); markDirty(false);
       emit("status", "synced"); return r.body;
-    }, function (netErr) { inflight = false; dirty = true; emit("status", "offline"); throw netErr; });
+    }, function (netErr) { inflight = false; markDirty(true); emit("status", "offline"); throw netErr; });
   }
   function queuePush(data) {
     if (!enabled() || !hasLocalPin()) return;
-    dirty = true; lastData = data; emit("status", "pending");
+    markDirty(true); lastData = data; emit("status", "pending");
     clearTimeout(pushTimer);
     pushTimer = setTimeout(function () { pushNow(data).catch(function () {}); }, 1200);
   }
@@ -82,7 +85,7 @@
       if (r.status !== 200) throw err(r); lsSet(PIN_KEY, next); return true;
     });
   }
-  function signOut() { lsDel(PIN_KEY); lsDel(BASE_KEY); baseUpdatedAt = null; }
+  function signOut() { lsDel(PIN_KEY); lsDel(BASE_KEY); lsDel(DIRTY_KEY); dirty = false; baseUpdatedAt = null; }
 
   // ---- AI assistant ----
   function hasKey() { return call("haskey", { pin: getPin() }).then(function (r) { return !!(r.body && r.body.hasKey); }); }
@@ -102,6 +105,7 @@
   document.addEventListener("visibilitychange", function () { if (!document.hidden && !dirty && hasLocalPin()) emit("refresh"); });
 
   baseUpdatedAt = ls(BASE_KEY) || null;
+  dirty = !!ls(DIRTY_KEY); // remember unsynced edits across reloads
 
   global.Sync = {
     enabled: enabled, hasLocalPin: hasLocalPin, status: status, setup: setup, unlock: unlock,

@@ -30,13 +30,32 @@
 
   /* ---- date parsing: dd/mm/yyyy, dd-mm-yyyy, yyyy-mm-dd, dd Mon yyyy -------- */
   var MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+  var DMY = true; // day-first (AU) by default; refined per-file by detectDateOrder()
+  function detectDateOrder(rows) {
+    var dayFirst = 0, monthFirst = 0;
+    rows.forEach(function (r) {
+      r.forEach(function (v) {
+        var m = String(v == null ? "" : v).trim().match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.]\d{2,4}$/);
+        if (m) { var a = +m[1], b = +m[2]; if (a > 12 && b <= 12) dayFirst++; else if (b > 12 && a <= 12) monthFirst++; }
+      });
+    });
+    DMY = monthFirst > dayFirst ? false : true; // only flip to month-first if the file proves it
+  }
+  function dim(y, m) { return new Date(y, m, 0).getDate(); }
+  function iso(y, m, d) {
+    y = +y; m = +m; d = +d;
+    if (!(y >= 1900 && y <= 2200) || !(m >= 1 && m <= 12) || !(d >= 1)) return null;
+    if (d > dim(y, m)) return null; // reject impossible day-of-month (e.g. 31 Feb)
+    return y + "-" + String(m).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+  }
   function parseDate(s) {
     if (!s) return null; s = String(s).trim();
     var m;
     if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return iso(m[1], m[2], m[3]);
     if ((m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/))) {
-      var dd = +m[1], mm = +m[2], yy = m[3]; // AU default dd/mm/yyyy
-      if (mm > 12 && dd <= 12) { var t = dd; dd = mm; mm = t; } // tolerate mm/dd
+      var a = +m[1], b = +m[2], yy = m[3];
+      var dd = DMY ? a : b, mm = DMY ? b : a;
+      if (mm > 12 && dd <= 12) { var t = dd; dd = mm; mm = t; } // correct when one component is unambiguous
       if (yy.length === 2) yy = (+yy > 70 ? "19" : "20") + yy;
       return iso(yy, mm, dd);
     }
@@ -45,15 +64,24 @@
       var y = m[3]; if (y.length === 2) y = "20" + y;
       return iso(y, mo, m[1]);
     }
-    var d = new Date(s); if (!isNaN(d)) return d.toISOString().slice(0, 10);
+    var d = new Date(s); if (!isNaN(d)) return iso(d.getFullYear(), d.getMonth() + 1, d.getDate()); // LOCAL components — no UTC day-shift
     return null;
   }
-  function iso(y, m, d) { return y + "-" + String(+m).padStart(2, "0") + "-" + String(+d).padStart(2, "0"); }
   function toNum(s) {
     if (s == null) return NaN;
-    s = String(s).replace(/[$,\s]/g, "").replace(/[()]/g, function (x) { return x === "(" ? "-" : ""; });
-    if (s === "" || s === "-") return NaN;
-    return parseFloat(s);
+    s = String(s).trim();
+    var neg = false;
+    if (/dr\b|dr$/i.test(s)) neg = true;          // "DR" debit suffix
+    if (/^\(.*\)$/.test(s)) neg = true;            // (123.45) accounting negative
+    s = s.replace(/\b(dr|cr)\b/ig, "").replace(/[()]/g, "").replace(/[$£€\s]/g, "");
+    // European decimal (1.234,56) → 1234.56
+    if (/,\d{2}$/.test(s) && /\.\d{3}/.test(s)) s = s.replace(/\./g, "").replace(",", ".");
+    else if (/^-?\d{1,3}(,\d{1,2})$/.test(s)) s = s.replace(",", ".");
+    s = s.replace(/,/g, "");
+    if (s === "" || s === "-" || s === "+") return NaN;
+    var n = parseFloat(s);
+    if (isNaN(n)) return NaN;
+    return neg ? -Math.abs(n) : n;
   }
 
   /* ---- column detection ---------------------------------------------------- */
@@ -64,15 +92,15 @@
   }
   function detectColumns(header) {
     var map = { date: -1, amount: -1, debit: -1, credit: -1, desc: -1, balance: -1 };
-    header.forEach(function (h, i) {
-      h = String(h).toLowerCase().trim();
-      if (map.date < 0 && /date|posted|processed/.test(h)) map.date = i;
-      else if (map.amount < 0 && /^amount|^amt|value/.test(h)) map.amount = i;
-      else if (map.debit < 0 && /debit|withdrawal|paid out|money out/.test(h)) map.debit = i;
-      else if (map.credit < 0 && /credit|deposit|paid in|money in/.test(h)) map.credit = i;
-      else if (map.desc < 0 && /desc|detail|narrative|transaction|reference|particulars|merchant/.test(h)) map.desc = i;
-      else if (map.balance < 0 && /balance/.test(h)) map.balance = i;
-    });
+    var H = header.map(function (h) { return String(h).toLowerCase().trim(); });
+    var used = {};
+    var exact = { date: /^(date|transaction date|posted|posting date|value date)$/, amount: /^(amount|amt|value)$/, debit: /^(debit|withdrawal|withdrawals|money out|paid out|debit amount)$/, credit: /^(credit|deposit|deposits|money in|paid in|credit amount)$/, desc: /^(description|details|narrative|transaction details|reference|particulars|merchant|memo|payee)$/, balance: /^(balance|running balance)$/ };
+    var sub = { date: /\bdate\b|posted|processed/, amount: /\bamount\b|\bamt\b/, debit: /\bdebit\b|withdrawal|paid out|money out/, credit: /\bcredit\b|deposit|paid in|money in/, desc: /desc|detail|narrative|particulars|merchant|memo|reference|payee/, balance: /\bbalance\b/ };
+    function pass(re) { H.forEach(function (h, i) {
+      if (/credit card|card number|card no/.test(h)) return; // card columns must not hijack credit/amount
+      for (var k in re) { if (map[k] < 0 && !used[i] && re[k].test(h)) { map[k] = i; used[i] = 1; break; } }
+    }); }
+    pass(exact); pass(sub);
     return map;
   }
   // headerless heuristic: find date col, amount col (numeric, signed), desc col (longest text)
@@ -96,25 +124,13 @@
       if (dateHits > sample.length / 2 && dateCol < 0) dateCol = c;
       if (textLen > bestDesc) { bestDesc = textLen; descCol = c; }
     }
-    // numeric columns that aren't the date column
-    var numeric = stats.filter(function (s) { return s.c !== dateCol && s.numHits > sample.length / 2; });
-    var amtCol = -1;
-    if (numeric.length) {
-      var withNeg = numeric.filter(function (s) { return s.negHits > 0; });
-      if (withNeg.length) {
-        // the column with the most negatives is the transaction amount
-        withNeg.sort(function (a, b) { return b.negHits - a.negHits || a.c - b.c; });
-        amtCol = withNeg[0].c;
-      } else if (numeric.length >= 2) {
-        // no negatives detected: assume earliest numeric is amount, last is balance
-        numeric.sort(function (a, b) { return a.c - b.c; });
-        amtCol = numeric[0].c;
-      } else {
-        amtCol = numeric[0].c;
-      }
-    }
-    var balCol = -1;
-    if (numeric.length >= 2) { var sorted = numeric.slice().sort(function (a, b) { return b.c - a.c; }); if (sorted[0].c !== amtCol) balCol = sorted[0].c; }
+    // numeric columns (not the date col), left-to-right. Canonical AU layout is
+    // Date, Amount, Description[, Balance] — so the EARLIEST numeric col is the amount
+    // and the LAST is the running balance. This is correct even when the account is
+    // overdrawn (balance negative) — we never pick balance as the amount.
+    var numeric = stats.filter(function (s) { return s.c !== dateCol && s.numHits > sample.length / 2; }).sort(function (a, b) { return a.c - b.c; });
+    var amtCol = numeric.length ? numeric[0].c : -1;
+    var balCol = numeric.length >= 2 ? numeric[numeric.length - 1].c : -1;
     // don't let the balance column win the description slot
     if (descCol === amtCol || descCol === balCol || descCol === dateCol) {
       var textCols = stats.filter(function (s) { return s.c !== dateCol && s.c !== amtCol && s.c !== balCol && s.textLen > 0; }).sort(function (a, b) { return b.textLen - a.textLen; });
@@ -175,12 +191,19 @@
   function fromCSV(text) {
     var rows = parseCSV(text);
     if (!rows.length) return { transactions: [], map: null, error: "No rows found in file." };
+    detectDateOrder(rows); // decide dd/mm vs mm/dd for the whole file before parsing dates
     var map, dataRows;
     if (looksLikeHeader(rows[0])) { map = detectColumns(rows[0]); dataRows = rows.slice(1); }
     else { map = detectPositional(rows); dataRows = rows; }
     if (map.date < 0) { map = detectPositional(rows); dataRows = looksLikeHeader(rows[0]) ? rows.slice(1) : rows; }
     var txns = normalize(dataRows, map);
-    return { transactions: txns, map: map, rowCount: dataRows.length };
+    // If the file carried no signs and no debit/credit split, in-vs-out is unknowable.
+    // Default everything to "out" (statements are mostly spending) and flag for the user.
+    var usedSplit = map.debit >= 0 || map.credit >= 0;
+    var anyNeg = txns.some(function (t) { return t.amount < 0; });
+    var directionUnknown = !usedSplit && !anyNeg && map.amount >= 0 && txns.length > 0;
+    if (directionUnknown) txns.forEach(function (t) { t.type = "expense"; t.amount = -Math.abs(t.amount); t.category = guessCategory(t.description); });
+    return { transactions: txns, map: map, rowCount: dataRows.length, directionUnknown: directionUnknown };
   }
 
   /* ---- PDF best-effort (lazy-loads pdf.js if online) ----------------------- */
@@ -222,14 +245,17 @@
   // parse free text lines like: 12/06/2026  WOOLWORTHS METRO  -84.20
   function parsePdfText(text) {
     var lines = text.split(/\n/), out = [];
+    // money = has a $ sign OR cents OR parentheses — avoids matching bare account/ref numbers
+    var MONEY = /(?:\$\s?-?\d[\d,]*(?:\.\d{2})?|-?\d[\d,]*\.\d{2}|\(\s?\$?\d[\d,]*(?:\.\d{2})?\s?\))/g;
     lines.forEach(function (ln) {
       var dm = ln.match(/(\d{1,2}[\/\-.][A-Za-z0-9]{2,3}[\/\-.]\d{2,4}|\d{4}-\d{2}-\d{2})/);
-      var amts = ln.match(/-?\$?\(?\d[\d,]*\.\d{2}\)?/g);
+      var amts = ln.match(MONEY);
       if (!dm || !amts) return;
       var date = parseDate(dm[1]); if (!date) return;
       var amount = toNum(amts[0]);
-      if (/\(/.test(amts[0])) amount = -Math.abs(amount);
-      var desc = ln.replace(dm[1], "").replace(/-?\$?\(?\d[\d,]*\.\d{2}\)?/g, "").replace(/\s+/g, " ").trim();
+      if (isNaN(amount)) return;
+      if (/^\(/.test(amts[0].trim())) amount = -Math.abs(amount);
+      var desc = ln.replace(dm[1], "").replace(MONEY, "").replace(/\s+/g, " ").trim();
       out.push({
         date: date, amount: amount, description: desc, type: amount < 0 ? "expense" : "income",
         category: amount < 0 ? guessCategory(desc) : "Income", include: true,

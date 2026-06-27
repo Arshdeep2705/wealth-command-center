@@ -1,5 +1,5 @@
 /* Service worker — offline-first app shell + runtime font caching */
-var CACHE = "wcc-v5";
+var CACHE = "wcc-v6";
 var SHELL = [
   "./",
   "./index.html",
@@ -18,7 +18,8 @@ var SHELL = [
 ];
 
 self.addEventListener("install", function (e) {
-  e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL).catch(function () {}); }).then(function () { return self.skipWaiting(); }));
+  // Let install REJECT if any shell file fails — never activate a partial/broken cache over a good one.
+  e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); }));
 });
 self.addEventListener("activate", function (e) {
   e.waitUntil(caches.keys().then(function (keys) {

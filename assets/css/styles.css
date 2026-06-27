@@ -214,8 +214,8 @@ a { color: inherit; text-decoration: none; }
 .sch-dh { height: 38px; display: flex; align-items: center; justify-content: center; gap: 8px; border-bottom: 1px solid var(--brd); font-family: var(--font-display); font-weight: 600; font-size: 0.84rem; position: sticky; top: 0; background: rgba(10, 14, 28, 0.86); backdrop-filter: blur(6px); z-index: 3; }
 .sch-col.today .sch-dh { color: var(--accent); }
 .sch-now { font: 700 0.58rem var(--font-mono); color: #04121a; background: var(--accent); padding: 1px 6px; border-radius: 999px; letter-spacing: 0.08em; }
-.sch-bizrow { min-height: 26px; display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; border-bottom: 1px solid var(--brd); align-content: center; }
-.sch-bizrow.empty { min-height: 26px; }
+.sch-bizrow { height: 26px; box-sizing: border-box; display: flex; flex-wrap: nowrap; gap: 4px; padding: 3px 4px; border-bottom: 1px solid var(--brd); align-items: center; overflow-x: auto; overflow-y: hidden; }
+.sch-bizrow.empty { height: 26px; }
 .sch-biz { font: 600 0.64rem var(--font-mono); color: var(--c); border: 1px solid color-mix(in srgb, var(--c) 40%, transparent); background: color-mix(in srgb, var(--c) 12%, transparent); padding: 1px 6px; border-radius: 6px; --c: var(--gold); }
 .sch-grid { position: relative; }
 .sch-cell { border-bottom: 1px solid rgba(255, 255, 255, 0.04); }
@@ -437,5 +437,11 @@ a { color: inherit; text-decoration: none; }
   .set-row { flex-direction: column; align-items: flex-start; }
   .sync-badge { top: auto; bottom: calc(76px + env(safe-area-inset-bottom)); left: 12px; right: auto; padding: 6px 11px; font-size: 0.7rem; }
   .ai-fab { right: 14px; bottom: calc(72px + env(safe-area-inset-bottom)); padding: 11px 15px; font-size: 0.82rem; }
+  /* keep dialogs reachable above the on-screen keyboard */
+  .overlay { place-items: start center; padding: 14px 14px 0; overflow-y: auto; }
+  .dialog { max-height: 92vh; max-height: 92dvh; margin-bottom: 14px; }
+  /* 16px minimum on inputs stops iOS Safari from auto-zooming (and shifting the viewport) on focus */
+  .field input, .field select, .form input, .form select, .form textarea,
+  .shift-row select, .shift-row input, .imp-input, .ai-input, .lock-input { font-size: 16px; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }

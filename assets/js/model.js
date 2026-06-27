@@ -135,7 +135,10 @@
   }
   function monthIncome(state, key) {
     var m = state.months && state.months[key];
-    if (m && m.incomeOverride != null) return { gross: +m.incomeOverride, bySource: null, days: daysInMonth(monthMeta(key).y, monthMeta(key).m), overridden: true };
+    if (m && m.incomeOverride != null) {
+      var ov = +m.incomeOverride;
+      if (isFinite(ov)) return { gross: ov, bySource: null, days: daysInMonth(monthMeta(key).y, monthMeta(key).m), overridden: true };
+    }
     return monthIncomeProjected(state, key);
   }
 
@@ -227,7 +230,7 @@
   function money0(n) { fmt(); return _fmt0.format(Math.round(+n || 0)); }
   function moneyShort(n) {
     n = +n || 0; var a = Math.abs(n), sign = n < 0 ? "-" : "";
-    if (a >= 1e6) return sign + "$" + (a / 1e6).toFixed(a >= 1e7 ? 1 : 2) + "M";
+    if (a >= 999500) return sign + "$" + (a / 1e6).toFixed(a >= 1e7 ? 1 : 2) + "M";
     if (a >= 1e3) return sign + "$" + (a / 1e3).toFixed(a >= 1e5 ? 0 : 1) + "k";
     return sign + "$" + a.toFixed(0);
   }
