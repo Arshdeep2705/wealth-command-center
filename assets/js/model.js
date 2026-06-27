@@ -139,27 +139,22 @@
     return monthIncomeProjected(state, key);
   }
 
-  /* ---- Expenses ------------------------------------------------------------ */
-  function monthExpenses(state, key) {
+  /* ---- Transactions (entries[]) -------------------------------------------- */
+  function monthEntries(state, key) {
     var m = state.months && state.months[key];
-    var list = (m && m.expenses) || [];
-    var sum = list.reduce(function (s, e) { return s + (+e.amount || 0); }, 0);
-    // plus any imported transactions dated in this month with type expense
-    (state.transactions || []).forEach(function (t) {
-      if (t && t.date && t.date.slice(0, 7) === key && (t.type === "expense" || (+t.amount < 0))) {
-        sum += Math.abs(+t.amount || 0);
-      }
-    });
-    return sum;
+    return (m && Array.isArray(m.entries)) ? m.entries : [];
+  }
+  function monthExpenses(state, key) {
+    return monthEntries(state, key).reduce(function (s, e) { return s + (e.type === "out" ? Math.abs(+e.amount || 0) : 0); }, 0);
+  }
+  function monthIncomeActual(state, key) {
+    return monthEntries(state, key).reduce(function (s, e) { return s + (e.type === "in" ? Math.abs(+e.amount || 0) : 0); }, 0);
   }
   function expenseByCategory(state, key) {
     var out = {};
-    var m = state.months && state.months[key];
-    ((m && m.expenses) || []).forEach(function (e) { out[e.category || "Other"] = (out[e.category || "Other"] || 0) + (+e.amount || 0); });
-    (state.transactions || []).forEach(function (t) {
-      if (t && t.date && t.date.slice(0, 7) === key && (t.type === "expense" || (+t.amount < 0))) {
-        var c = t.category || "Other"; out[c] = (out[c] || 0) + Math.abs(+t.amount || 0);
-      }
+    monthEntries(state, key).forEach(function (e) {
+      if (e.type !== "out") return;
+      var c = e.category || "Other"; out[c] = (out[c] || 0) + Math.abs(+e.amount || 0);
     });
     return out;
   }
@@ -260,7 +255,8 @@
     weeklyByDay: weeklyByDay, weeklyTotal: weeklyTotal, weeklyHours: weeklyHours, weeklyBySource: weeklyBySource,
     sourceById: sourceById, accountById: accountById,
     monthIncome: monthIncome, monthIncomeProjected: monthIncomeProjected, monthExpenses: monthExpenses,
-    expenseByCategory: expenseByCategory, effectiveRate: effectiveRate, monthSummary: monthSummary, months: months, yearSummary: yearSummary,
+    expenseByCategory: expenseByCategory, monthEntries: monthEntries, monthIncomeActual: monthIncomeActual,
+    effectiveRate: effectiveRate, monthSummary: monthSummary, months: months, yearSummary: yearSummary,
     netWorth: netWorth, netWorthProjection: netWorthProjection,
     daysInMonth: daysInMonth, jsToMon: jsToMon,
     money: money, money0: money0, moneyShort: moneyShort, pct: pct, hhmm: hhmm,

@@ -294,39 +294,47 @@
     if (!activeMonth) activeMonth = todayInfo().monthKey;
     var mons = M.months(state);
     var sum = M.monthSummary(state, activeMonth);
+    var actualIn = M.monthIncomeActual(state, activeMonth);
     var byCat = M.expenseByCategory(state, activeMonth);
     var catSegs = Object.keys(byCat).map(function (c, i) { return { label: c, value: byCat[c], color: catColor(i) }; }).sort(function (a, b) { return b.value - a.value; });
-    var m = state.months[activeMonth];
-    var list = (m.expenses || []).slice().sort(function (a, b) { return (b.date || "").localeCompare(a.date || ""); });
+    var list = M.monthEntries(state, activeMonth).slice().sort(function (a, b) { return (b.date || "").localeCompare(a.date || ""); });
 
     var monthTabs = '<div class="seg-tabs">' + mons.map(function (k) {
       return '<button class="seg' + (k === activeMonth ? " on" : "") + '" data-month="' + k + '">' + M.monthLabel(k) + '</button>';
     }).join("") + '</div>';
 
-    return topbar("Expenses", "Log spending · import bank statements · auto-categorised",
+    return topbar("Transactions", "Import statements or add by hand · tap any row to edit or add a note",
         '<button class="pill-btn primary" data-act="import-statement">' + icoUpload() + ' Import statement</button>' +
         '<button class="pill-btn" data-act="add-expense">+ Add</button>') +
       monthTabs +
       '<div class="grid">' +
         card(cardH(M.monthLabelLong(activeMonth)) +
           '<div class="kpi-row">' +
-            kpi("Income", M.money0(sum.gross), { color: "var(--accent)" }) +
+            kpi("Income (projected)", M.money0(sum.gross), { color: "var(--accent)" }) +
             kpi("Expenses", M.money0(sum.expenses), { color: sum.expenses ? "var(--bad)" : "var(--muted)" }) +
+          '</div>' +
+          '<div class="kpi-row">' +
+            kpi("Money in (logged)", M.money0(actualIn), { color: actualIn ? "var(--good)" : "var(--muted)", sub: "from statements" }) +
             kpi("Net profit", M.money0(sum.netProfit), { color: "var(--good)" }) +
           '</div>') +
-        card(cardH("By category") + (catSegs.length ?
+        card(cardH("Where it goes") + (catSegs.length ?
           '<div class="mix"><div class="mix-chart">' + C.donut(catSegs, { size: 150, stroke: 18, centerMain: M.moneyShort(sum.expenses), centerSub: "spent" }) + '</div>' +
           '<ul class="legend">' + catSegs.map(function (s) { return '<li><i style="background:' + s.color + '"></i><span>' + esc(s.label) + '</span><b>' + M.money0(s.value) + '</b></li>'; }).join("") + '</ul></div>'
           : '<p class="muted">No expenses yet for this month. Use <b>Import statement</b> or <b>+ Add</b>.</p>')) +
-        card(cardH(list.length + " transactions", '<button class="mini-link" data-act="add-expense">+ add</button>') +
+        card(cardH(list.length + " transaction" + (list.length === 1 ? "" : "s"), '<button class="mini-link" data-act="add-expense">+ add</button>') +
           (list.length ?
             '<div class="table-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Description</th><th>Category</th><th class="r">Amount</th><th></th></tr></thead><tbody>' +
             list.map(function (e) {
-              return '<tr><td class="num">' + esc((e.date || "").slice(5)) + '</td><td>' + esc(e.description || e.name || "—") + '</td>' +
-                '<td>' + chip(e.category || "Other") + '</td><td class="r num bad">' + M.money0(e.amount) + '</td>' +
-                '<td><button class="x-btn" data-del-exp="' + esc(e.id) + '" title="delete">' + icoX() + '</button></td></tr>';
-            }).join("") + '</tbody></table></div>'
-            : '<p class="muted">Nothing logged.</p>'), "span-2") +
+              var inn = e.type === "in";
+              return '<tr class="row-edit" data-edit-entry="' + esc(e.id) + '" title="Tap to edit / add a note">' +
+                '<td class="num">' + esc((e.date || "").slice(5)) + '</td>' +
+                '<td>' + esc(e.description || "—") + (e.note ? '<div class="entry-note">' + icoNote() + ' ' + esc(e.note) + '</div>' : '') + '</td>' +
+                '<td>' + chip(inn ? "Income" : (e.category || "Other")) + '</td>' +
+                '<td class="r num ' + (inn ? "good" : "bad") + '">' + (inn ? "+" : "−") + M.money0(e.amount) + '</td>' +
+                '<td><button class="x-btn" data-del-entry="' + esc(e.id) + '" title="delete">' + icoX() + '</button></td></tr>';
+            }).join("") + '</tbody></table></div>' +
+            '<p class="muted xs" style="margin-top:10px">Tap a row to edit the amount, category, or add a note explaining what it was.</p>'
+            : '<p class="muted">Nothing logged yet. <b>Import statement</b> to pull in your bank transactions, or <b>+ Add</b> one manually.</p>'), "span-2") +
       '</div>';
   }
 
@@ -491,23 +499,53 @@
   }
   function closeModal() { var o = $(".overlay"); if (o) { o.classList.remove("show"); setTimeout(function () { $("#modalRoot").innerHTML = ""; }, 180); } }
 
-  function addExpenseModal() {
-    var cats = state.expenseCategories || [];
-    modal("Add expense", '<form id="expForm" class="form">' +
-      '<label class="field"><span>Date</span><input type="date" name="date" value="' + activeMonth + '-01" required></label>' +
-      '<label class="field"><span>Description</span><input type="text" name="description" placeholder="e.g. Woolworths" required></label>' +
-      '<label class="field"><span>Amount ($)</span><input type="number" name="amount" step="0.01" min="0" placeholder="0.00" required></label>' +
-      '<label class="field"><span>Category</span><select name="category">' + cats.map(function (c) { return '<option>' + esc(c) + '</option>'; }).join("") + '</select></label>' +
-      '</form>',
-      '<button class="pill-btn" data-close-modal>Cancel</button><button class="pill-btn primary" data-act="save-expense">Save expense</button>');
+  function findEntry(id) {
+    var found = null;
+    Object.keys(state.months).forEach(function (k) {
+      (state.months[k].entries || []).forEach(function (e) { if (e.id === id) found = { e: e, key: k }; });
+    });
+    return found;
   }
-  function saveExpense() {
-    var f = $("#expForm"); if (!f || !f.reportValidity()) return;
-    var d = f.date.value, amt = Math.abs(parseFloat(f.amount.value) || 0);
-    if (!amt) return;
-    var key = d.slice(0, 7); if (!state.months[key]) key = activeMonth;
-    state.months[key].expenses.push({ id: "exp_" + Date.now() + "_" + Math.random().toString(36).slice(2, 5), date: d, description: f.description.value, amount: amt, category: f.category.value });
-    commit(); closeModal(); activeMonth = key; render(); toast("Expense added");
+  function entryModal(id) {
+    var hit = id ? findEntry(id) : null, e = hit ? hit.e : null, isNew = !e;
+    var cats = (state.expenseCategories || []).slice();
+    if (e && e.category && e.category !== "Income" && cats.indexOf(e.category) < 0) cats.push(e.category);
+    e = e || { id: "e_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), date: activeMonth + "-01", description: "", amount: 0, type: "out", category: cats[0] || "Other", note: "" };
+    var isIn = e.type === "in";
+    modal(isNew ? "Add transaction" : "Edit transaction", '<form id="entryForm" class="form">' +
+      '<input type="hidden" name="id" value="' + esc(e.id) + '">' +
+      '<div class="type-toggle"><label class="tt ' + (!isIn ? "on out" : "") + '"><input type="radio" name="type" value="out" ' + (!isIn ? "checked" : "") + '>Money out</label>' +
+        '<label class="tt ' + (isIn ? "on in" : "") + '"><input type="radio" name="type" value="in" ' + (isIn ? "checked" : "") + '>Money in</label></div>' +
+      '<div class="form-2"><label class="field"><span>Date</span><input type="date" name="date" value="' + esc(e.date) + '" required></label>' +
+      '<label class="field"><span>Amount ($)</span><input type="number" name="amount" step="0.01" min="0" value="' + (e.amount || "") + '" placeholder="0.00" required></label></div>' +
+      '<label class="field"><span>Description</span><input type="text" name="description" value="' + esc(e.description) + '" placeholder="e.g. Woolworths, or ‘car repair’" required></label>' +
+      '<label class="field"><span>Category</span><select name="category">' + cats.map(function (c) { return '<option ' + (e.category === c ? "selected" : "") + '>' + esc(c) + '</option>'; }).join("") + '</select></label>' +
+      '<label class="field"><span>Note — explain this one (optional)</span><textarea name="note" rows="2" placeholder="e.g. One-off car repair, not a normal month. Or: this transfer is actually savings.">' + esc(e.note || "") + '</textarea></label>' +
+      '</form>',
+      (isNew ? '' : '<button class="pill-btn danger" data-del-entry="' + esc(e.id) + '">Delete</button>') +
+      '<button class="pill-btn" data-close-modal>Cancel</button><button class="pill-btn primary" data-act="save-entry">Save</button>');
+    // live toggle styling
+    $$("[name=type]").forEach(function (r) { r.addEventListener("change", function () {
+      $$(".type-toggle .tt").forEach(function (l) { l.classList.remove("on", "in", "out"); });
+      var lab = r.closest(".tt"); lab.classList.add("on", r.value);
+    }); });
+  }
+  function saveEntry() {
+    var f = $("#entryForm"); if (!f || !f.reportValidity()) return;
+    var amt = Math.abs(parseFloat(f.amount.value) || 0); if (!amt) return;
+    var d = f.date.value, key = d.slice(0, 7); if (!state.months[key]) key = activeMonth;
+    var type = f.type.value === "in" ? "in" : "out";
+    var obj = { id: f.id.value, date: d, description: f.description.value.trim(), amount: amt, type: type, category: type === "in" ? "Income" : f.category.value, note: (f.note.value || "").trim() };
+    // remove any existing copy (date/month may have changed), then add to the right month
+    var existing = findEntry(obj.id);
+    if (existing) state.months[existing.key].entries = state.months[existing.key].entries.filter(function (x) { return x.id !== obj.id; });
+    state.months[key].entries.push(obj);
+    commit(); closeModal(); activeMonth = key; render(); toast("Saved ✓");
+  }
+  function delEntry(id) {
+    var hit = findEntry(id); if (!hit) return;
+    state.months[hit.key].entries = state.months[hit.key].entries.filter(function (x) { return x.id !== id; });
+    commit(); closeModal(); render(); toast("Deleted");
   }
 
   function accountModal(id) {
@@ -553,8 +591,9 @@
     dz.addEventListener("drop", function (e) { e.preventDefault(); dz.classList.remove("over"); if (e.dataTransfer.files[0]) handleStatementFile(e.dataTransfer.files[0]); });
     fi.addEventListener("change", function () { if (fi.files[0]) handleStatementFile(fi.files[0]); });
   }
+  function setStmtStatus(html) { var s = $("#stmtStatus"); if (s) s.innerHTML = html; }
   function handleStatementFile(file) {
-    var status = $("#stmtStatus"); status.textContent = "Reading " + file.name + "…";
+    setStmtStatus("Reading " + esc(file.name) + "…");
     var isPdf = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
     if (isPdf) {
       var rd = new FileReader();
@@ -567,46 +606,52 @@
     }
   }
   function afterParse(res, name) {
-    if (res.error) { $("#stmtStatus").innerHTML = '<span class="bad">' + esc(res.error) + '</span>'; return; }
+    if (res.error) { setStmtStatus('<span class="bad">' + esc(res.error) + '</span>'); return; }
     var txns = (res.transactions || []).filter(function (t) { return t.date; });
-    if (!txns.length) { $("#stmtStatus").innerHTML = '<span class="bad">No transactions detected. Try a CSV export from your bank.</span>'; return; }
+    if (!txns.length) { setStmtStatus('<span class="bad">No transactions detected. Try a CSV export from your bank.</span>'); return; }
     reviewImportModal(txns, name);
   }
   function reviewImportModal(txns, name) {
-    var cats = state.expenseCategories || [];
+    var cats = (state.expenseCategories || []).slice();
+    txns.forEach(function (t) { if (t.category && t.category !== "Income" && cats.indexOf(t.category) < 0) cats.push(t.category); });
     window.__import = txns;
     var rows = txns.map(function (t, i) {
-      return '<tr><td><input type="checkbox" data-imp-chk="' + i + '" ' + (t.include ? "checked" : "") + '></td>' +
-        '<td class="num">' + esc(t.date) + '</td><td class="imp-desc">' + esc(t.description) + '</td>' +
-        '<td><select data-imp-cat="' + i + '">' + cats.concat(["Income"]).map(function (c) { return '<option ' + (t.category === c ? "selected" : "") + '>' + esc(c) + '</option>'; }).join("") + '</select></td>' +
-        '<td class="r num ' + (t.amount < 0 ? "bad" : "good") + '">' + M.money(t.amount) + '</td></tr>';
+      var inn = t.amount > 0;
+      return '<tr class="imp-row">' +
+        '<td><input type="checkbox" data-imp-chk="' + i + '" ' + (t.include ? "checked" : "") + '></td>' +
+        '<td class="num">' + esc((t.date || "").slice(5)) + '</td>' +
+        '<td><input class="imp-input" data-imp-desc="' + i + '" value="' + esc(t.description) + '" />' +
+          '<input class="imp-input imp-note" data-imp-note="' + i + '" placeholder="＋ note (optional)" value="' + esc(t.note || "") + '" /></td>' +
+        '<td><select data-imp-cat="' + i + '"' + (inn ? " disabled" : "") + '>' + cats.concat(["Income"]).map(function (c) { return '<option ' + ((inn ? "Income" : t.category) === c ? "selected" : "") + '>' + esc(c) + '</option>'; }).join("") + '</select></td>' +
+        '<td class="r num ' + (inn ? "good" : "bad") + '">' + (inn ? "+" : "−") + M.money(Math.abs(t.amount)) + '</td></tr>';
     }).join("");
     var exp = txns.filter(function (t) { return t.amount < 0; }).reduce(function (s, t) { return s + Math.abs(t.amount); }, 0);
     var inc = txns.filter(function (t) { return t.amount > 0; }).reduce(function (s, t) { return s + t.amount; }, 0);
     modal("Review " + txns.length + " transactions",
-      '<p class="muted small">From <b>' + esc(name) + '</b> · ' + M.money0(exp) + ' out · ' + M.money0(inc) + ' in. Untick anything you don’t want. Dates route to the right month automatically.</p>' +
-      '<div class="table-wrap tall"><table class="tbl imp"><thead><tr><th></th><th>Date</th><th>Description</th><th>Category</th><th class="r">Amount</th></tr></thead><tbody>' + rows + '</tbody></table></div>',
+      '<p class="muted small">From <b>' + esc(name) + '</b> · <span class="bad">' + M.money0(exp) + ' out</span> · <span class="good">' + M.money0(inc) + ' in</span>. Untick anything you don’t want, fix a description, or add a note. Dates route to the right month automatically.</p>' +
+      '<div class="table-wrap tall"><table class="tbl imp"><thead><tr><th></th><th>Date</th><th>Description &amp; note</th><th>Category</th><th class="r">Amount</th></tr></thead><tbody>' + rows + '</tbody></table></div>',
       '<button class="pill-btn" data-close-modal>Cancel</button><button class="pill-btn primary" data-act="commit-import">Import selected</button>');
   }
   function commitImport() {
     var txns = window.__import || [];
     $$("[data-imp-chk]").forEach(function (cb) { txns[+cb.getAttribute("data-imp-chk")].include = cb.checked; });
     $$("[data-imp-cat]").forEach(function (sel) { txns[+sel.getAttribute("data-imp-cat")].category = sel.value; });
-    var added = 0;
+    $$("[data-imp-desc]").forEach(function (inp) { txns[+inp.getAttribute("data-imp-desc")].description = inp.value; });
+    $$("[data-imp-note]").forEach(function (inp) { txns[+inp.getAttribute("data-imp-note")].note = inp.value; });
+    var added = 0, skipped = 0;
     txns.forEach(function (t) {
       if (!t.include) return;
       var key = t.date.slice(0, 7);
-      if (!state.months[key]) return; // outside horizon → skip silently
-      if (t.amount < 0) {
-        state.months[key].expenses.push({ id: t.id, date: t.date, description: t.description, amount: Math.abs(t.amount), category: t.category });
-        added++;
-      } else {
-        // income — store as a transaction (informational), doesn't override projections
-        state.transactions.push({ id: t.id, date: t.date, description: t.description, amount: t.amount, type: "income", category: "Income" });
-        added++;
-      }
+      if (!state.months[key]) { skipped++; return; } // outside Jun–Dec 2026 horizon
+      var inn = t.amount > 0;
+      state.months[key].entries.push({
+        id: t.id, date: t.date, description: (t.description || "").trim(), amount: Math.abs(t.amount),
+        type: inn ? "in" : "out", category: inn ? "Income" : (t.category || "Other"), note: (t.note || "").trim()
+      });
+      added++;
     });
-    commit(); closeModal(); render(); toast(added + " transactions imported");
+    commit(); closeModal(); render();
+    toast(added + " imported" + (skipped ? " · " + skipped + " skipped (outside Jun–Dec)" : "") + " ✓");
   }
 
   /* ---- change passcode ---- */
@@ -653,13 +698,14 @@
   /* ============================================================== events */
   function bind() {
     document.addEventListener("click", function (e) {
-      var t = e.target.closest("[data-act],[data-close-modal],[data-month],[data-del-exp],[data-edit-acct],[data-del-acct],[data-month-go],[data-shift]");
+      var t = e.target.closest("[data-act],[data-close-modal],[data-month],[data-del-entry],[data-edit-entry],[data-edit-acct],[data-del-acct],[data-month-go],[data-shift]");
       if (!t) return;
       if (t.hasAttribute("data-close-modal")) { closeModal(); return; }
       var act = t.getAttribute("data-act");
       if (t.hasAttribute("data-month")) { activeMonth = t.getAttribute("data-month"); render(); return; }
       if (t.hasAttribute("data-month-go")) { activeMonth = t.getAttribute("data-month-go"); location.hash = "#expenses"; return; }
-      if (t.hasAttribute("data-del-exp")) { delExpense(t.getAttribute("data-del-exp")); return; }
+      if (t.hasAttribute("data-del-entry")) { delEntry(t.getAttribute("data-del-entry")); return; }
+      if (t.hasAttribute("data-edit-entry")) { entryModal(t.getAttribute("data-edit-entry")); return; }
       if (t.hasAttribute("data-edit-acct")) { accountModal(t.getAttribute("data-edit-acct")); return; }
       if (t.hasAttribute("data-del-acct")) { deleteAccount(t.getAttribute("data-del-acct")); return; }
       if (t.hasAttribute("data-shift")) { showShift(t.getAttribute("data-shift")); return; }
@@ -667,8 +713,8 @@
         case "export": exportBackup(); break;
         case "import": importBackup(); break;
         case "import-statement": importStatementModal(); break;
-        case "add-expense": addExpenseModal(); break;
-        case "save-expense": saveExpense(); break;
+        case "add-expense": entryModal(null); break;
+        case "save-entry": saveEntry(); break;
         case "add-account": accountModal(null); break;
         case "save-account": saveAccount(); break;
         case "commit-import": commitImport(); break;
@@ -692,11 +738,6 @@
     });
     window.addEventListener("hashchange", render);
     window.addEventListener("beforeinstallprompt", function (e) { e.preventDefault(); global.__deferredPrompt = e; $$("[data-act=install]").forEach(function (b) { b.hidden = false; }); });
-  }
-  function delExpense(id) {
-    Object.keys(state.months).forEach(function (k) { state.months[k].expenses = (state.months[k].expenses || []).filter(function (e) { return e.id !== id; }); });
-    state.transactions = (state.transactions || []).filter(function (t) { return t.id !== id; });
-    commit(); render(); toast("Deleted");
   }
   function showShift(id) {
     var sh = (state.shifts || []).find(function (x) { return x.id === id; }); if (!sh) return;
@@ -755,6 +796,7 @@
   function icoUpload() { return svg('<path d="M12 21V9M7 13l5-5 5 5M5 3h14"/>'); }
   function icoX() { return svg('<path d="M6 6l12 12M18 6L6 18"/>'); }
   function icoPencil() { return svg('<path d="M4 20h4l10-10-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>', "ico-sm"); }
+  function icoNote() { return svg('<path d="M5 4h14v12l-4 4H5z"/><path d="M15 20v-4h4M9 9h6M9 13h4"/>', "ico-xs"); }
   function svg(inner, cls) { return '<svg class="ico ' + (cls || "") + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + '</svg>'; }
 
   /* ---------------------------------------------------------- cloud sync */

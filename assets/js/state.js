@@ -78,14 +78,34 @@
     s.months = s.months || {};
     months.forEach(function (m) {
       var seed = s.monthsSeed[m] || {};
-      s.months[m] = Object.assign({ key: m, expenses: [], incomeOverride: null, note: "" }, s.months[m] || {}, {
-        expenses: (s.months[m] && s.months[m].expenses) || seed.expenses || [],
-        incomeOverride: (s.months[m] && s.months[m].incomeOverride != null) ? s.months[m].incomeOverride : (seed.incomeOverride != null ? seed.incomeOverride : null),
-        note: (s.months[m] && s.months[m].note) || seed.note || ""
-      });
+      var prev = s.months[m] || {};
+      var mo = {
+        key: m,
+        incomeOverride: (prev.incomeOverride != null) ? prev.incomeOverride : (seed.incomeOverride != null ? seed.incomeOverride : null),
+        note: prev.note || seed.note || ""
+      };
+      // Unified transaction list: entries[]  { id, date, description, amount(+), type:'in'|'out', category, note }
+      var entries = prev.entries || seed.entries || null;
+      if (!Array.isArray(entries)) {
+        // migrate from the old expenses[] shape (all treated as money out)
+        entries = ((prev.expenses || seed.expenses || [])).map(function (e) {
+          return { id: e.id || uid(), date: e.date, description: e.description || e.name || "", amount: Math.abs(+e.amount || 0), type: "out", category: e.category || "Other", note: e.note || "" };
+        });
+      }
+      mo.entries = entries;
+      s.months[m] = mo;
     });
+    // migrate any legacy global transactions[] into the right month, then retire the array
+    (s.transactions || []).forEach(function (t) {
+      var k = (t.date || "").slice(0, 7), mo = s.months[k]; if (!mo) return;
+      if (mo.entries.some(function (x) { return x.id === t.id; })) return;
+      var amt = +t.amount || 0;
+      mo.entries.push({ id: t.id || uid(), date: t.date, description: t.description || "", amount: Math.abs(amt), type: (t.type === "income" || amt > 0) ? "in" : "out", category: t.category || (amt > 0 ? "Income" : "Other"), note: t.note || "" });
+    });
+    s.transactions = [];
     return s;
   }
+  function uid() { return "e" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
   function monthRange(start, end) {
     var out = [];
@@ -125,9 +145,10 @@
     // persist live month edits back into the seed so a re-import restores them
     if (state.months) {
       Object.keys(state.months).forEach(function (k) {
-        copy.monthsSeed[k] = { expenses: state.months[k].expenses, incomeOverride: state.months[k].incomeOverride, note: state.months[k].note };
+        copy.monthsSeed[k] = { entries: state.months[k].entries, incomeOverride: state.months[k].incomeOverride, note: state.months[k].note };
       });
     }
+    copy.transactions = [];
     copy.exportedAt = new Date().toISOString();
     return JSON.stringify(copy, null, 2);
   }
