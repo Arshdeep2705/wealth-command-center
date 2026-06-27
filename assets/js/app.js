@@ -4,6 +4,8 @@
 (function (global) {
   "use strict";
   var M, C, S, IMP, state;
+  // Visible build tag — keep in lock-step with CACHE in sw.js. Lets us SEE which build a device is actually running.
+  var APP_VERSION = "v7";
 
   var NAV = [
     { id: "overview", label: "Command", m: "Home", icon: icoGrid },
@@ -49,6 +51,7 @@
         '<div class="side-foot">' +
           '<div class="side-nw"><span class="lbl">Net worth</span><strong class="num">' + M.money0(nw.total) + '</strong></div>' +
           '<button class="ghost-btn" data-act="install" hidden>Install app</button>' +
+          '<div class="build-tag muted small" title="App build running on this device">build ' + APP_VERSION + '</div>' +
         '</div>' +
       '</aside>' +
       '<main class="main" id="view"></main>' +
@@ -551,6 +554,7 @@
       case "update_account": var ac = resolveAccount(op.name); return "🏦 " + esc(ac ? ac.name : op.name) + " " + (op.set != null ? "→ " + M.money0(op.set) : ((op.delta >= 0 ? "+" : "") + M.money0(op.delta || 0)));
       case "add_transaction": var tk = (op.date || "").slice(0, 7); var oor = !state.months[tk]; return (op.type === "in" ? "➕ Income " : "➖ Expense ") + "<b>" + M.money0(op.amount) + "</b> · " + esc(op.description || "") + " (" + esc(op.date || "") + ")" + (oor ? ' <em style="color:var(--warn)">⚠ outside Jun–Dec 2026 — will be skipped</em>' : "");
       case "set_setting": return "⚙️ " + esc(op.key) + " = " + esc(String(op.value));
+      case "feature_request": return "📝 Log a " + (op.kind === "bug" ? "bug report" : "feature request") + ": <b>" + esc(op.title || "(untitled)") + "</b> — I’ll pass this to the developer.";
       default: return "• " + esc(op.op || "change");
     }
   }
@@ -595,6 +599,10 @@
           n++;
         } else if (op.op === "set_setting") {
           if (op.key === "privateHospitalCover" || op.key === "mlsEnabled") { state.settings[op.key] = (op.value === true || op.value === "true"); n++; }
+        } else if (op.op === "feature_request") {
+          state.featureRequests = state.featureRequests || [];
+          state.featureRequests.push({ id: "fr_" + Date.now().toString(36) + n, title: (op.title || "(untitled)").toString().slice(0, 140), detail: (op.detail || "").toString().slice(0, 2000), kind: op.kind === "bug" ? "bug" : "feature", status: "open", createdAt: new Date().toISOString() });
+          n++;
         }
       } catch (e) { console.warn("op failed", op, e); }
     });
@@ -606,42 +614,93 @@
     if (!Sync.hasLocalPin()) { toast("Unlock the app first (enter your passcode)"); return; }
     assistantModal();
   }
+  /* AI assistant chat — a real running thread; draft + history persist to survive iOS background reloads. */
+  var AI_DRAFT_KEY = "wcc_ai_draft", AI_THREAD_KEY = "wcc_ai_thread";
+  var AI_EGS = [
+    "I started Tuesdays at a cafe, 9am–5pm, $32/hr, paid into CommBank",
+    "My ANZ balance is now $41,200",
+    "Add a $900 one-off car repair expense on the 12th",
+    "I stopped working at King Kitchen"
+  ];
+  function aiDraftGet() { try { return localStorage.getItem(AI_DRAFT_KEY) || ""; } catch (e) { return ""; } }
+  function aiDraftSet(v) { try { if (v) localStorage.setItem(AI_DRAFT_KEY, v); else localStorage.removeItem(AI_DRAFT_KEY); } catch (e) {} }
+  function aiThreadGet() { try { return JSON.parse(localStorage.getItem(AI_THREAD_KEY) || "[]") || []; } catch (e) { return []; } }
+  function aiThreadSet(t) { try { localStorage.setItem(AI_THREAD_KEY, JSON.stringify((t || []).slice(-40))); } catch (e) {} }
+
   function assistantModal() {
     modal("✨ Assistant",
-      '<p class="muted small">Tell me what changed in plain English and I’ll update your dashboard. For example:</p>' +
-      '<div class="ai-examples">' +
-        '<button class="ai-eg">I started Tuesdays at a cafe, 9am–5pm, $32/hr, paid into CommBank</button>' +
-        '<button class="ai-eg">My ANZ balance is now $41,200</button>' +
-        '<button class="ai-eg">Add a $900 one-off car repair expense on the 12th</button>' +
-        '<button class="ai-eg">I stopped working at King Kitchen</button>' +
-      '</div>' +
-      '<textarea id="aiMsg" rows="3" class="ai-input" placeholder="Type what changed…"></textarea>' +
-      '<div id="aiOut" class="ai-out"></div>',
-      '<button class="pill-btn" data-close-modal>Close</button><button class="pill-btn primary" data-act="ai-send">Ask</button>');
-    $$(".ai-eg").forEach(function (b) { b.addEventListener("click", function () { $("#aiMsg").value = b.textContent; }); });
+      '<div id="aiThread" class="ai-thread"></div>' +
+      '<textarea id="aiMsg" rows="2" class="ai-input" placeholder="Type what changed…"></textarea>',
+      '<button class="mini-link" data-act="ai-clear" style="margin-right:auto">Clear chat</button>' +
+      '<button class="pill-btn" data-close-modal>Close</button>' +
+      '<button class="pill-btn primary" data-act="ai-send">Ask</button>');
+    renderAiThread();
+    var box = $("#aiMsg"); if (box) box.value = aiDraftGet();   // restore any unsent draft (no input event fired → no loop)
     setTimeout(function () { var m = $("#aiMsg"); if (m) m.focus(); }, 60);
   }
-  function aiSend() {
-    var msg = ($("#aiMsg") && $("#aiMsg").value || "").trim(); if (!msg) return;
-    var out = $("#aiOut"); out.innerHTML = '<div class="ai-thinking"><span class="sb-dot"></span> Thinking…</div>';
-    Sync.assistant(msg, buildAIContext()).then(function (res) {
-      window.__aiOps = (res && res.operations) || [];
-      if (res && res.clarify && (!res.operations || !res.operations.length)) {
-        out.innerHTML = '<div class="ai-clarify">' + esc(res.clarify) + '</div>'; return;
-      }
-      if (!window.__aiOps.length) { out.innerHTML = '<div class="ai-clarify">I couldn’t turn that into a change — try being more specific.</div>'; return; }
-      out.innerHTML = '<div class="ai-summary">' + esc(res.summary || "Here’s what I’ll change:") + '</div>' +
-        '<ul class="ai-ops">' + window.__aiOps.map(function (op) { return '<li>' + describeOp(op) + '</li>'; }).join("") + '</ul>' +
-        '<button class="pill-btn primary" data-act="ai-apply" style="width:100%;justify-content:center;margin-top:6px">Apply these changes</button>';
-    }).catch(function (e) {
-      if (e && (e.code === 400) && /key/i.test(e.message || "")) { out.innerHTML = '<div class="ai-clarify">You need a free AI key first. <button class="mini-link" data-act="ai-key">Set it up →</button></div>'; return; }
-      out.innerHTML = '<div class="ai-clarify bad">' + esc((e && e.message) || "Something went wrong.") + '</div>';
+  function aiBubble(m, i) {
+    if (m.role === "user") return '<div class="ai-msg user">' + esc(m.text) + '</div>';
+    if (m.pending) return '<div class="ai-msg ai"><div class="ai-thinking"><span class="sb-dot"></span> Thinking…</div></div>';
+    if (m.error) return '<div class="ai-msg ai"><div class="ai-clarify bad">' + esc(m.error) + '</div></div>';
+    if (m.needsKey) return '<div class="ai-msg ai"><div class="ai-clarify">You need a free AI key first. <button class="mini-link" data-act="ai-key">Set it up →</button></div></div>';
+    if (m.ops && m.ops.length) {
+      return '<div class="ai-msg ai"><div class="ai-summary">' + esc(m.summary || "Here’s what I’ll change:") + '</div>' +
+        '<ul class="ai-ops">' + m.ops.map(function (op) { return '<li>' + describeOp(op) + '</li>'; }).join("") + '</ul>' +
+        (m.applied ? '<div class="ai-done">Applied ✓</div>'
+          : '<button class="pill-btn primary" data-ai-apply="' + i + '" style="width:100%;justify-content:center;margin-top:6px">Apply these changes</button>') +
+        '</div>';
+    }
+    if (m.clarify) return '<div class="ai-msg ai"><div class="ai-clarify">' + esc(m.clarify) + '</div></div>';
+    return "";
+  }
+  function renderAiThread() {
+    var host = $("#aiThread"); if (!host) return;
+    var thread = aiThreadGet();
+    if (!thread.length) {
+      host.innerHTML = '<p class="muted small">Tell me what changed in plain English and I’ll update your dashboard. Tap an example or type your own:</p>' +
+        '<div class="ai-examples">' + AI_EGS.map(function (t) { return '<button class="ai-eg">' + esc(t) + '</button>'; }).join("") + '</div>';
+    } else {
+      host.innerHTML = thread.map(aiBubble).join("");
+    }
+    host.scrollTop = host.scrollHeight;
+    $$("#aiThread .ai-eg").forEach(function (b) {
+      b.addEventListener("click", function () { var m = $("#aiMsg"); if (m) { m.value = b.textContent; aiDraftSet(m.value); m.focus(); } });
     });
   }
-  function aiApply() {
-    var ops = window.__aiOps || []; var n = applyOps(ops);
-    commit(); closeModal(); render(); toast(n ? "Done ✓ Updated " + n + " thing" + (n > 1 ? "s" : "") : "Nothing to apply");
+  function aiSend() {
+    var box = $("#aiMsg"); var msg = (box && box.value || "").trim(); if (!msg) return;
+    var pid = "p_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    var thread = aiThreadGet();
+    thread.push({ role: "user", text: msg });
+    thread.push({ role: "ai", pending: true, pid: pid });
+    aiThreadSet(thread);
+    if (box) box.value = "";   // clear the box immediately so the next message starts fresh
+    aiDraftSet("");
+    renderAiThread();
+    Sync.assistant(msg, buildAIContext()).then(function (res) {
+      var t = aiThreadGet(), m = t.filter(function (x) { return x.pid === pid; })[0]; if (!m) return;
+      delete m.pending; delete m.pid;
+      var ops = (res && res.operations) || [];
+      if (ops.length) { m.summary = res.summary || "Here’s what I’ll change:"; m.ops = ops; m.applied = false; }
+      else if (res && res.clarify) { m.clarify = res.clarify; }
+      else { m.clarify = "I couldn’t turn that into a change — try being more specific."; }
+      aiThreadSet(t); renderAiThread();
+    }).catch(function (e) {
+      var t = aiThreadGet(), m = t.filter(function (x) { return x.pid === pid; })[0]; if (!m) return;
+      delete m.pending; delete m.pid;
+      if (e && e.code === 400 && /key/i.test(e.message || "")) m.needsKey = true;
+      else m.error = (e && e.message) || "Something went wrong.";
+      aiThreadSet(t); renderAiThread();
+    });
   }
+  function aiApply(i) {
+    var t = aiThreadGet(), m = t[i]; if (!m || !m.ops || m.applied) return;
+    var n = applyOps(m.ops);
+    m.applied = true; aiThreadSet(t);
+    commit(); render(); renderAiThread();   // render() rebuilds #view only — the open modal/thread are untouched
+    toast(n ? "Done ✓ Updated " + n + " thing" + (n > 1 ? "s" : "") : "Nothing to apply");
+  }
+  function aiClearChat() { aiThreadSet([]); renderAiThread(); }
   function aiKeyModal() {
     modal("Set up the free AI key",
       '<ol class="ai-steps">' +
@@ -994,7 +1053,7 @@
     document.addEventListener("click", function (e) {
       // backdrop close: ONLY when the dark backdrop itself is tapped (never bubbled from a field/button inside)
       if (e.target.classList && e.target.classList.contains("overlay")) { closeModal(); return; }
-      var t = e.target.closest("[data-act],[data-close-modal],[data-month],[data-del-entry],[data-edit-entry],[data-edit-acct],[data-del-acct],[data-edit-source],[data-del-source],[data-month-go],[data-shift]");
+      var t = e.target.closest("[data-act],[data-close-modal],[data-month],[data-del-entry],[data-edit-entry],[data-edit-acct],[data-del-acct],[data-edit-source],[data-del-source],[data-month-go],[data-shift],[data-ai-apply]");
       if (!t) return;
       if (t.hasAttribute("data-close-modal")) { closeModal(); return; }
       var act = t.getAttribute("data-act");
@@ -1007,6 +1066,7 @@
       if (t.hasAttribute("data-edit-acct")) { accountModal(t.getAttribute("data-edit-acct")); return; }
       if (t.hasAttribute("data-del-acct")) { deleteAccount(t.getAttribute("data-del-acct")); return; }
       if (t.hasAttribute("data-shift")) { showShift(t.getAttribute("data-shift")); return; }
+      if (t.hasAttribute("data-ai-apply")) { aiApply(+t.getAttribute("data-ai-apply")); return; }
       switch (act) {
         case "export": exportBackup(); break;
         case "import": importBackup(); break;
@@ -1019,7 +1079,7 @@
         case "save-source": saveSource(); break;
         case "ai-open": aiFabClick(); break;
         case "ai-send": aiSend(); break;
-        case "ai-apply": aiApply(); break;
+        case "ai-clear": aiClearChat(); break;
         case "ai-key": aiKeyModal(); break;
         case "ai-savekey": aiSaveKey(); break;
         case "commit-import": commitImport(); break;
@@ -1035,6 +1095,7 @@
     });
     document.addEventListener("input", function (e) {
       var el = e.target;
+      if (el.id === "aiMsg") { aiDraftSet(el.value); return; }   // persist only the assistant draft (never passcode/key fields)
       if (el.hasAttribute("data-set")) {
         var k = el.getAttribute("data-set");
         state.settings[k] = el.type === "checkbox" ? el.checked : (isNaN(+el.value) ? el.value : +el.value);
@@ -1207,7 +1268,17 @@
     render();
     setupSync();
     if ("serviceWorker" in navigator) {
-      window.addEventListener("load", function () { navigator.serviceWorker.register("./sw.js").catch(function () {}); });
+      // When a NEW build takes control, reload once so the device drops the stale cached app (fixes "phone stuck on old version").
+      var hadController = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.addEventListener("controllerchange", function () {
+        if (hadController && !global.__wccReloaded) { global.__wccReloaded = true; location.reload(); }
+      });
+      window.addEventListener("load", function () {
+        navigator.serviceWorker.register("./sw.js").then(function (reg) {
+          // re-check for a fresh build whenever the (possibly long-backgrounded) PWA comes back to the foreground
+          document.addEventListener("visibilitychange", function () { if (!document.hidden) { try { reg.update(); } catch (e) {} } });
+        }).catch(function () {});
+      });
     }
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();

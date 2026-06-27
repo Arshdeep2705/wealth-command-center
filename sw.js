@@ -1,5 +1,5 @@
 /* Service worker — offline-first app shell + runtime font caching */
-var CACHE = "wcc-v6";
+var CACHE = "wcc-v7";
 var SHELL = [
   "./",
   "./index.html",

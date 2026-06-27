@@ -75,6 +75,8 @@
     s.transactions = Array.isArray(s.transactions) ? s.transactions : [];
     s.expenseCategories = Array.isArray(s.expenseCategories) && s.expenseCategories.length
       ? s.expenseCategories : DEMO_STATE.expenseCategories.slice();
+    // Backlog of code-level wishes the in-app assistant captured for the developer (Claude Code) to build.
+    s.featureRequests = Array.isArray(s.featureRequests) ? s.featureRequests : [];
     // Build the month map across the horizon
     s.monthsSeed = s.monthsSeed || {};
     var months = monthRange(s.horizon.startMonth, s.horizon.endMonth);
@@ -174,6 +176,7 @@
     local.accounts = unionById(local.accounts, server.accounts);
     local.incomeSources = unionById(local.incomeSources, server.incomeSources);
     local.shifts = unionById(local.shifts, server.shifts);
+    local.featureRequests = unionById(local.featureRequests, server.featureRequests);
     var sm = server.months || {};
     Object.keys(sm).forEach(function (k) {
       if (!local.months[k]) local.months[k] = sm[k];
