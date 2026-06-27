@@ -414,6 +414,8 @@ a { color: inherit; text-decoration: none; }
 .ai-msg.ai .ai-summary { margin-bottom: 8px; }
 .ai-msg.ai .ai-ops { margin-bottom: 0; }
 .ai-done { margin-top: 8px; color: #66e0a3; font-weight: 600; font-size: 0.85rem; }
+.ai-answer { font-size: 0.92rem; line-height: 1.5; }
+.ai-answer b { font-family: var(--font-mono); }
 .build-tag { opacity: 0.5; font-family: var(--font-mono); letter-spacing: 0.02em; }
 .ai-steps { padding-left: 18px; display: flex; flex-direction: column; gap: 8px; font-size: 0.88rem; color: var(--ink-dim); margin-bottom: 14px; }
 .ai-steps a { color: var(--accent); } .ai-steps code { font-family: var(--font-mono); font-size: 0.8rem; color: var(--gold); }

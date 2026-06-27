@@ -534,6 +534,27 @@
     var fuzzy = (state.incomeSources || []).filter(function (s) { return s.name.toLowerCase().indexOf(r) >= 0 || r.indexOf(s.name.toLowerCase()) >= 0; });
     return fuzzy.length === 1 ? fuzzy[0] : null;
   }
+  function matchEntries(match) {
+    match = match || {};
+    var needle = String(match.description || match.descriptionContains || "").toLowerCase().trim();
+    var mk = match.month || null, res = [];
+    Object.keys(state.months).forEach(function (k) {
+      if (mk && k !== mk) return;
+      (state.months[k].entries || []).forEach(function (e) {
+        if (needle && (e.description || "").toLowerCase().indexOf(needle) < 0) return;
+        res.push({ e: e, key: k });
+      });
+    });
+    return res;
+  }
+  function answerQuery(op) {
+    var metric = op.metric || "";
+    if (metric === "account_balance") { var a = resolveAccount(op.name || op.account); return a ? (esc(a.name) + ": <b>" + M.money0(a.balance || 0) + "</b>") : ("I couldn’t find an account matching “" + esc(op.name || op.account || "") + "”."); }
+    if (metric === "net_worth" || metric === "total_balance") { var nw = M.netWorth(state); return "Net worth ≈ <b>" + M.money0(nw.total) + "</b> (liquid " + M.money0(nw.liquid) + ", pending " + M.money0(nw.pending) + ")."; }
+    if (metric === "weekly_income") { return "Weekly income ≈ <b>" + M.money0(M.weeklyTotal(state)) + "</b> (≈ " + M.money0(M.weeklyTotal(state) * 52) + "/yr)."; }
+    if (metric === "total_expenses" || metric === "monthly_expenses") { var k = op.month; if (!k || !state.months[k]) return "Tell me which month (e.g. 2026-07)."; var tot = (state.months[k].entries || []).filter(function (e) { return e.type === "out"; }).reduce(function (t, e) { return t + (+e.amount || 0); }, 0); return "Expenses in " + esc(M.monthLabel(k)) + " ≈ <b>" + M.money0(tot) + "</b>."; }
+    return "I can answer: an account balance, net worth, weekly income, or a month’s total expenses.";
+  }
   function expandShift(sh, sourceId, biz, name, idx) {
     var day = +sh.day || 0, pay = +sh.pay || 0;
     if (biz || sh.start == null) return [{ id: sourceId + "_b" + idx, sourceId: sourceId, day: day, pay: pay, label: name, kind: "business" }];
@@ -554,6 +575,18 @@
       case "update_account": var ac = resolveAccount(op.name); return "🏦 " + esc(ac ? ac.name : op.name) + " " + (op.set != null ? "→ " + M.money0(op.set) : ((op.delta >= 0 ? "+" : "") + M.money0(op.delta || 0)));
       case "add_transaction": var tk = (op.date || "").slice(0, 7); var oor = !state.months[tk]; return (op.type === "in" ? "➕ Income " : "➖ Expense ") + "<b>" + M.money0(op.amount) + "</b> · " + esc(op.description || "") + " (" + esc(op.date || "") + ")" + (oor ? ' <em style="color:var(--warn)">⚠ outside Jun–Dec 2026 — will be skipped</em>' : "");
       case "set_setting": return "⚙️ " + esc(op.key) + " = " + esc(String(op.value));
+      case "update_transaction": var um = (op.set || {}); var ubits = []; if (um.amount != null) ubits.push(M.money0(um.amount)); if (um.category) ubits.push("→ " + esc(um.category)); if (um.description) ubits.push("“" + esc(um.description) + "”"); if (um.date) ubits.push("@ " + esc(um.date)); return "✏️ Edit transaction <b>" + esc((op.match || {}).description || "?") + "</b>" + (ubits.length ? " · " + ubits.join(", ") : "");
+      case "remove_transaction": return "🗑️ Delete transaction <b>" + esc((op.match || {}).description || "?") + "</b>" + ((op.match || {}).month ? " (" + esc(op.match.month) + ")" : "");
+      case "bulk_categorize": return "🏷️ Recategorise all matching <b>" + esc((op.match || {}).descriptionContains || (op.match || {}).description || "?") + "</b> → " + esc(op.category || "?");
+      case "add_recurring_expense": return "🔁 " + (op.type === "in" ? "Income" : "Expense") + " <b>" + esc(op.description || "Recurring") + "</b> " + M.money0(op.amount || 0) + "/mo · " + esc(op.from || "start") + "→" + esc(op.to || "end") + " (day " + (op.dayOfMonth || 1) + ")";
+      case "rename_account": return "🏦 Rename account <b>" + esc(op.name) + "</b> → <b>" + esc(op.newName || "?") + "</b>";
+      case "rename_income_source": return "💼 Rename income <b>" + esc(op.name) + "</b> → <b>" + esc(op.newName || "?") + "</b>";
+      case "recolor": return "🎨 Recolour " + (op.entity === "income_source" ? "income" : "account") + " <b>" + esc(op.name) + "</b> → " + esc(op.color || "?");
+      case "remove_account": return "🗑️ Remove account <b>" + esc(op.name) + "</b>";
+      case "set_account_liquid": return "💧 Mark <b>" + esc(op.name) + "</b> as " + (op.liquid === true || op.liquid === "true" ? "liquid / available now" : "pending / not yet available");
+      case "set_horizon": return "📅 Tracking window → <b>" + esc(op.startMonth || state.horizon.startMonth) + "</b> to <b>" + esc(op.endMonth || state.horizon.endMonth) + "</b>";
+      case "add_expense_category": return "➕ Expense category <b>" + esc(op.name) + "</b>";
+      case "remove_expense_category": return "🗑️ Remove category <b>" + esc(op.name) + "</b>";
       case "feature_request": return "📝 Log a " + (op.kind === "bug" ? "bug report" : "feature request") + ": <b>" + esc(op.title || "(untitled)") + "</b> — I’ll pass this to the developer.";
       default: return "• " + esc(op.op || "change");
     }
@@ -599,6 +632,50 @@
           n++;
         } else if (op.op === "set_setting") {
           if (op.key === "privateHospitalCover" || op.key === "mlsEnabled") { state.settings[op.key] = (op.value === true || op.value === "true"); n++; }
+          else if (op.key === "theme" && typeof op.value === "string") { state.settings.theme = op.value; n++; }
+          else if (op.key === "weekStartsOn") { state.settings.weekStartsOn = (+op.value === 0 ? 0 : 1); n++; }
+        } else if (op.op === "update_transaction") {
+          var ut = matchEntries(op.match); if (ut.length !== 1) return; // refuse to guess when ambiguous
+          var ue = ut[0].e, set = op.set || {};
+          if (set.amount != null && isFinite(+set.amount)) ue.amount = Math.abs(+set.amount);
+          if (set.description != null) ue.description = String(set.description);
+          if (set.category != null) ue.category = String(set.category);
+          if (set.note != null) ue.note = String(set.note);
+          if (set.type === "in" || set.type === "out") ue.type = set.type;
+          if (set.date) { var nk = String(set.date).slice(0, 7); if (state.months[nk]) { state.months[ut[0].key].entries = state.months[ut[0].key].entries.filter(function (x) { return x.id !== ue.id; }); ue.date = set.date; state.months[nk].entries.push(ue); } }
+          n++;
+        } else if (op.op === "remove_transaction") {
+          var rt = matchEntries(op.match); if (rt.length !== 1) return; // refuse to guess when ambiguous
+          state.months[rt[0].key].entries = state.months[rt[0].key].entries.filter(function (x) { return x.id !== rt[0].e.id; });
+          n++;
+        } else if (op.op === "bulk_categorize") {
+          var bc = matchEntries(op.match); if (!op.category || !bc.length) return;
+          bc.forEach(function (h) { if (h.e.type === "out") h.e.category = String(op.category); }); n += bc.length;
+        } else if (op.op === "add_recurring_expense") {
+          var range = S.monthRange(op.from || state.horizon.startMonth, op.to || state.horizon.endMonth);
+          var dom = Math.min(28, Math.max(1, +op.dayOfMonth || 1)), rtyp = op.type === "in" ? "in" : "out", ramt = Math.abs(+op.amount || 0);
+          if (ramt) range.forEach(function (mk2) { if (!state.months[mk2]) return; state.months[mk2].entries.push({ id: "e_" + Date.now().toString(36) + n + mk2.replace(/-/g, ""), date: mk2 + "-" + String(dom).padStart(2, "0"), description: op.description || "Recurring", amount: ramt, type: rtyp, category: rtyp === "in" ? "Income" : (op.category || "Other"), note: op.note || "" }); n++; });
+        } else if (op.op === "rename_account") {
+          var rna = resolveAccount(op.name); if (!rna || !op.newName) return; rna.name = String(op.newName); rna.short = String(op.newName).slice(0, 6); n++;
+        } else if (op.op === "rename_income_source") {
+          var rns = resolveSource(op.name); if (!rns || !op.newName) return; var nn = String(op.newName); rns.name = nn; rns.short = nn.length > 14 ? nn.slice(0, 12) + "…" : nn; n++;
+        } else if (op.op === "recolor") {
+          var rc = (typeof op.color === "string" && /^#[0-9a-fA-F]{3,8}$/.test(op.color)) ? op.color : null; if (!rc) return;
+          var rcent = op.entity === "income_source" ? resolveSource(op.name) : resolveAccount(op.name); if (!rcent) return; rcent.color = rc; n++;
+        } else if (op.op === "remove_account") {
+          var rmac = resolveAccount(op.name); if (!rmac) return;
+          if ((state.incomeSources || []).some(function (s) { return s.account === rmac.id; })) return; // refuse: still receives income
+          state.accounts = state.accounts.filter(function (a) { return a.id !== rmac.id; }); n++;
+        } else if (op.op === "set_account_liquid") {
+          var sla = resolveAccount(op.name); if (!sla) return; sla.liquid = (op.liquid === true || op.liquid === "true"); n++;
+        } else if (op.op === "set_horizon") {
+          if (op.startMonth) state.horizon.startMonth = op.startMonth;
+          if (op.endMonth) state.horizon.endMonth = op.endMonth;
+          state = S.normalize(state); n++;
+        } else if (op.op === "add_expense_category") {
+          if (!op.name) return; state.expenseCategories = state.expenseCategories || []; if (state.expenseCategories.indexOf(op.name) < 0) { state.expenseCategories.push(String(op.name)); n++; }
+        } else if (op.op === "remove_expense_category") {
+          if (!op.name) return; state.expenseCategories = (state.expenseCategories || []).filter(function (c) { return c !== op.name; }); n++;
         } else if (op.op === "feature_request") {
           state.featureRequests = state.featureRequests || [];
           state.featureRequests.push({ id: "fr_" + Date.now().toString(36) + n, title: (op.title || "(untitled)").toString().slice(0, 140), detail: (op.detail || "").toString().slice(0, 2000), kind: op.kind === "bug" ? "bug" : "feature", status: "open", createdAt: new Date().toISOString() });
@@ -643,6 +720,7 @@
     if (m.pending) return '<div class="ai-msg ai"><div class="ai-thinking"><span class="sb-dot"></span> Thinking…</div></div>';
     if (m.error) return '<div class="ai-msg ai"><div class="ai-clarify bad">' + esc(m.error) + '</div></div>';
     if (m.needsKey) return '<div class="ai-msg ai"><div class="ai-clarify">You need a free AI key first. <button class="mini-link" data-act="ai-key">Set it up →</button></div></div>';
+    if (m.answer) return '<div class="ai-msg ai">' + (m.summary ? '<div class="ai-summary">' + esc(m.summary) + '</div>' : '') + '<div class="ai-answer">' + m.answer + '</div></div>';
     if (m.ops && m.ops.length) {
       return '<div class="ai-msg ai"><div class="ai-summary">' + esc(m.summary || "Here’s what I’ll change:") + '</div>' +
         '<ul class="ai-ops">' + m.ops.map(function (op) { return '<li>' + describeOp(op) + '</li>'; }).join("") + '</ul>' +
@@ -681,7 +759,8 @@
       var t = aiThreadGet(), m = t.filter(function (x) { return x.pid === pid; })[0]; if (!m) return;
       delete m.pending; delete m.pid;
       var ops = (res && res.operations) || [];
-      if (ops.length) { m.summary = res.summary || "Here’s what I’ll change:"; m.ops = ops; m.applied = false; }
+      if (ops.length && ops.every(function (o) { return o.op === "query"; })) { m.answer = ops.map(answerQuery).join("<br>"); if (res.summary) m.summary = res.summary; }
+      else if (ops.length) { m.summary = res.summary || "Here’s what I’ll change:"; m.ops = ops; m.applied = false; }
       else if (res && res.clarify) { m.clarify = res.clarify; }
       else { m.clarify = "I couldn’t turn that into a change — try being more specific."; }
       aiThreadSet(t); renderAiThread();
