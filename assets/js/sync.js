@@ -84,6 +84,16 @@
   }
   function signOut() { lsDel(PIN_KEY); lsDel(BASE_KEY); baseUpdatedAt = null; }
 
+  // ---- AI assistant ----
+  function hasKey() { return call("haskey", { pin: getPin() }).then(function (r) { return !!(r.body && r.body.hasKey); }); }
+  function setKey(key) { return call("setkey", { pin: getPin(), key: key }).then(function (r) { if (r.status !== 200) throw err(r); return r.body; }); }
+  function assistant(message, context) {
+    return call("assistant", { pin: getPin(), message: message, context: context }).then(function (r) {
+      if (r.status !== 200) throw err(r);
+      return r.body.result;
+    });
+  }
+
   function err(r) { var e = new Error((r.body && r.body.error) || ("HTTP " + r.status)); e.code = r.status; return e; }
   function locked() { var e = new Error("locked"); e.code = 401; return e; }
 
@@ -96,6 +106,7 @@
   global.Sync = {
     enabled: enabled, hasLocalPin: hasLocalPin, status: status, setup: setup, unlock: unlock,
     pull: pull, push: pushNow, queuePush: queuePush, flush: flush, changePin: changePin,
-    signOut: signOut, on: on, isDirty: function () { return dirty; }, base: function () { return baseUpdatedAt; }
+    signOut: signOut, hasKey: hasKey, setKey: setKey, assistant: assistant,
+    on: on, isDirty: function () { return dirty; }, base: function () { return baseUpdatedAt; }
   };
 })(window);

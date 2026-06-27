@@ -55,6 +55,7 @@
       '<nav class="tabbar">' + NAV.map(function (n) {
         return '<a href="#' + n.id + '" class="tab" data-nav="' + n.id + '"><span class="t-ico">' + n.icon() + '</span><span>' + n.m + '</span></a>';
       }).join("") + '</nav>' +
+      '<button class="ai-fab" data-act="ai-open" title="Ask the assistant" aria-label="Ask the assistant">' + icoSpark() + '<span>Ask</span></button>' +
       '<div class="modal-root" id="modalRoot"></div>' +
       '<div class="lock-root" id="lockRoot"></div>' +
       '<div class="sync-badge" id="syncBadge" hidden></div>' +
@@ -469,16 +470,20 @@
           '<div class="set-row"><div><strong>Import backup</strong><p class="muted small">Load a .json backup (replaces current data).</p></div><button class="pill-btn" data-act="import">' + icoUpload() + ' Import</button></div>' +
           '<div class="set-row"><div><strong>Import bank statement</strong><p class="muted small">CSV (ANZ / CommBank / any) or PDF.</p></div><button class="pill-btn" data-act="import-statement">' + icoUpload() + ' Statement</button></div>' +
           '<div class="set-row danger"><div><strong>Reset to demo</strong><p class="muted small">Clears your data from this browser.</p></div><button class="pill-btn danger" data-act="reset">Reset</button></div>') +
+        card(cardH("AI assistant", '<span class="chip" style="--c:var(--accent)">Gemini</span>') +
+          '<p class="muted small">Tap the ✨ <b>Ask</b> button anywhere to describe changes in plain English (new job, balance change, one-off expense) and the app updates itself.</p>' +
+          '<div class="set-row"><div><strong>Free AI key</strong><p class="muted small">One free Google Gemini key powers it. Stored privately in your Supabase.</p></div><button class="pill-btn" data-act="ai-key">Set / update key</button></div>') +
         card(cardH("Tax & assumptions") +
           '<p class="muted small" style="margin-bottom:14px">All tax figures use the Australian resident brackets for FY2025-26 (income tax + 2% Medicare levy). Income, after-tax and savings are all calculated on this.</p>' +
           '<label class="check"><input type="checkbox" data-set="privateHospitalCover" ' + (s.privateHospitalCover ? "checked" : "") + '><span>I have private hospital cover (avoids the Medicare Levy Surcharge)</span></label>' +
           '<label class="check"><input type="checkbox" data-set="mlsEnabled" ' + (s.mlsEnabled ? "checked" : "") + '><span>Include Medicare Levy Surcharge in estimates (applies to high earners without hospital cover)</span></label>') +
-        card(cardH("Income sources") +
+        card(cardH("Income streams", '<span class="muted small">tap to edit</span>') +
           '<div class="acct-list">' + (state.incomeSources || []).map(function (src) {
             var weekly = M.weeklyBySource(state)[src.id] || 0;
-            return '<div class="acct"><span class="acct-dot" style="background:' + src.color + '"></span><div class="acct-main"><strong>' + esc(src.name) + '</strong><span class="muted xs">' + esc(src.note || "") + '</span></div><div class="acct-bal num">' + M.money0(weekly) + '/wk</div></div>';
+            return '<div class="acct" data-edit-source="' + esc(src.id) + '"><span class="acct-dot" style="background:' + src.color + '"></span><div class="acct-main"><strong>' + esc(src.name) + '</strong><span class="muted xs">' + (src.businessIncome ? "business income · " : "") + esc(src.note || "") + '</span></div><div class="acct-bal num">' + M.money0(weekly) + '/wk</div>' + icoPencil() + '</div>';
           }).join("") + '</div>' +
-          '<p class="muted xs">Edit shift-level pay in a future update, or adjust the backup JSON directly.</p>') +
+          '<button class="pill-btn" data-act="add-source" style="margin-top:10px">+ Add income stream</button>' +
+          '<p class="muted xs" style="margin-top:8px">Adding or editing a stream instantly updates your schedule, weekly &amp; monthly income, net worth and tax.</p>') +
         card(cardH("Accounts & balances") +
           '<div class="acct-list">' + (state.accounts || []).map(function (a) {
             return '<div class="acct" data-edit-acct="' + esc(a.id) + '"><span class="acct-dot" style="background:' + a.color + '"></span><div class="acct-main"><strong>' + esc(a.name) + '</strong></div><div class="acct-bal num">' + M.money0(a.balance) + '</div>' + icoPencil() + '</div>';
@@ -488,6 +493,157 @@
           '<p class="muted small">Wealth Command Center · all calculations run locally in your browser. Nothing is uploaded anywhere. Net-worth, income and ATO tax figures are planning estimates. Built ' + new Date().getFullYear() + '.</p>' +
           '<button class="ghost-btn" data-act="install" hidden>Install as app</button>', "span-2") +
       '</div>';
+  }
+
+  /* ============================================================= AI assistant */
+  function aiAvailable() { return global.Sync && Sync.enabled() && Sync.hasLocalPin(); }
+  function buildAIContext() {
+    // Privacy: send only NAMES/types so the model can resolve references — never balances or pay amounts.
+    var accts = (state.accounts || []).map(function (a) { return a.name + " (" + a.type + (a.liquid ? "" : ", pending") + ")"; }).join("; ");
+    var srcs = (state.incomeSources || []).map(function (s) { return s.name + " → " + ((M.accountById(state, s.account) || {}).name || "?") + (s.businessIncome ? " [business]" : ""); }).join("; ");
+    var today = new Date().toISOString().slice(0, 10);
+    return "Today: " + today + ". Tracking months " + state.horizon.startMonth + " to " + state.horizon.endMonth + ".\n" +
+      "Accounts (names only): " + (accts || "none") + ".\n" +
+      "Income sources (names only): " + (srcs || "none") + ".\n" +
+      "Expense categories: " + (state.expenseCategories || []).join(", ") + ".";
+  }
+  function num(v) { if (typeof v === "number") return v; if (typeof v === "string" && v.indexOf(":") >= 0) return hhmmToDec(v); var n = parseFloat(v); return isNaN(n) ? null : n; }
+  function slug(s) { return (s || "x").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 16); }
+  function resolveAccount(ref) {
+    if (!ref) return null; var r = String(ref).toLowerCase();
+    return (state.accounts || []).find(function (a) { return a.id === ref || a.name.toLowerCase() === r || (a.short || "").toLowerCase() === r; }) ||
+      (state.accounts || []).find(function (a) { return a.name.toLowerCase().indexOf(r) >= 0 || r.indexOf(a.name.toLowerCase()) >= 0; }) || null;
+  }
+  function resolveSource(ref) {
+    if (!ref) return null; var r = String(ref).toLowerCase();
+    return (state.incomeSources || []).find(function (s) { return s.id === ref || s.name.toLowerCase() === r; }) ||
+      (state.incomeSources || []).find(function (s) { return s.name.toLowerCase().indexOf(r) >= 0; }) || null;
+  }
+  function expandShift(sh, sourceId, biz, name, idx) {
+    var day = +sh.day || 0, pay = +sh.pay || 0;
+    if (biz || sh.start == null) return [{ id: sourceId + "_b" + idx, sourceId: sourceId, day: day, pay: pay, label: name, kind: "business" }];
+    var s = num(sh.start), e = num(sh.end); if (s == null) s = 0; if (e == null) e = 24;
+    if (e <= s) { var h1 = 24 - s, h2 = e, tot = (h1 + h2) || 1; return [
+      { id: sourceId + "_" + idx + "a", sourceId: sourceId, day: day, start: s, end: 24, pay: +(pay * h1 / tot).toFixed(2), label: sh.label || name, kind: "shift" },
+      { id: sourceId + "_" + idx + "b", sourceId: sourceId, day: (day + 1) % 7, start: 0, end: e, pay: +(pay * h2 / tot).toFixed(2), label: sh.label || name, kind: "shift" }
+    ]; }
+    return [{ id: sourceId + "_" + idx, sourceId: sourceId, day: day, start: s, end: e, pay: pay, label: sh.label || name, kind: "shift" }];
+  }
+  function shiftsWeekly(shifts) { return (shifts || []).reduce(function (t, s) { return t + (+s.pay || 0); }, 0); }
+  function describeOp(op) {
+    switch (op.op) {
+      case "add_income_source": var a = resolveAccount(op.account); return "➕ Income <b>" + esc(op.name) + "</b> → " + esc(a ? a.name : (op.account || "?")) + " · ≈ <b>" + M.money0(shiftsWeekly(op.shifts)) + "/wk</b>" + (op.businessIncome ? " (business)" : "");
+      case "update_income_source": return "✏️ Update income <b>" + esc(op.name) + "</b>" + (op.shifts ? " · new schedule ≈ " + M.money0(shiftsWeekly(op.shifts)) + "/wk" : "");
+      case "remove_income_source": return "🗑️ Remove income <b>" + esc(op.name) + "</b>";
+      case "add_account": return "➕ Account <b>" + esc(op.name) + "</b> (" + esc(op.type || "bank") + ") · " + M.money0(op.balance || 0);
+      case "update_account": var ac = resolveAccount(op.name); return "🏦 " + esc(ac ? ac.name : op.name) + " " + (op.set != null ? "→ " + M.money0(op.set) : ((op.delta >= 0 ? "+" : "") + M.money0(op.delta || 0)));
+      case "add_transaction": return (op.type === "in" ? "➕ Income " : "➖ Expense ") + "<b>" + M.money0(op.amount) + "</b> · " + esc(op.description || "") + " (" + esc(op.date || "") + ")";
+      case "set_setting": return "⚙️ " + esc(op.key) + " = " + esc(String(op.value));
+      default: return "• " + esc(op.op || "change");
+    }
+  }
+  function applyOps(ops) {
+    var n = 0;
+    (ops || []).forEach(function (op) {
+      try {
+        if (op.op === "add_income_source") {
+          var acc = resolveAccount(op.account) || (state.accounts || [])[0];
+          var id = "src_" + slug(op.name) + "_" + Date.now().toString(36).slice(-3) + n;
+          state.incomeSources.push({ id: id, name: op.name, short: op.name.length > 14 ? op.name.slice(0, 12) + "…" : op.name, account: acc ? acc.id : null, color: op.color || catColor(state.incomeSources.length), businessIncome: !!op.businessIncome, kind: op.businessIncome ? "business" : "work", note: op.note || "" });
+          (op.shifts || []).forEach(function (sh, i) { expandShift(sh, id, !!op.businessIncome, op.name, i).forEach(function (b) { state.shifts.push(b); }); });
+          n++;
+        } else if (op.op === "update_income_source") {
+          var src = resolveSource(op.name); if (!src) return;
+          if (op.account) { var a2 = resolveAccount(op.account); if (a2) src.account = a2.id; }
+          if (op.note != null) src.note = op.note;
+          if (op.color) src.color = op.color;
+          if (op.businessIncome != null) src.businessIncome = !!op.businessIncome;
+          if (Array.isArray(op.shifts)) {
+            state.shifts = state.shifts.filter(function (s) { return s.sourceId !== src.id; });
+            op.shifts.forEach(function (sh, i) { expandShift(sh, src.id, !!src.businessIncome, src.name, i).forEach(function (b) { state.shifts.push(b); }); });
+          }
+          n++;
+        } else if (op.op === "remove_income_source") {
+          var s2 = resolveSource(op.name); if (!s2) return;
+          state.incomeSources = state.incomeSources.filter(function (x) { return x.id !== s2.id; });
+          state.shifts = state.shifts.filter(function (x) { return x.sourceId !== s2.id; });
+          n++;
+        } else if (op.op === "add_account") {
+          state.accounts.push({ id: "acc_" + slug(op.name) + "_" + Date.now().toString(36).slice(-3) + n, name: op.name, short: (op.name || "").slice(0, 6), type: op.type || "bank", liquid: op.liquid !== false, balance: +op.balance || 0, color: catColor(state.accounts.length), note: op.note || "" });
+          n++;
+        } else if (op.op === "update_account") {
+          var ac2 = resolveAccount(op.name); if (!ac2) return;
+          if (op.set != null) ac2.balance = +op.set; else if (op.delta != null) ac2.balance = (+ac2.balance || 0) + (+op.delta);
+          n++;
+        } else if (op.op === "add_transaction") {
+          var key = (op.date || "").slice(0, 7); if (!state.months[key]) return;
+          state.months[key].entries.push({ id: "e_" + Date.now().toString(36) + n, date: op.date, description: op.description || "", amount: Math.abs(+op.amount || 0), type: op.type === "in" ? "in" : "out", category: op.type === "in" ? "Income" : (op.category || "Other"), note: op.note || "" });
+          n++;
+        } else if (op.op === "set_setting") {
+          state.settings[op.key] = op.value; n++;
+        }
+      } catch (e) { console.warn("op failed", op, e); }
+    });
+    return n;
+  }
+
+  function aiFabClick() {
+    if (!(global.Sync && Sync.enabled())) { toast("Cloud sync is off in this build"); return; }
+    if (!Sync.hasLocalPin()) { toast("Unlock the app first (enter your passcode)"); return; }
+    assistantModal();
+  }
+  function assistantModal() {
+    modal("✨ Assistant",
+      '<p class="muted small">Tell me what changed in plain English and I’ll update your dashboard. For example:</p>' +
+      '<div class="ai-examples">' +
+        '<button class="ai-eg">I started Tuesdays at a cafe, 9am–5pm, $32/hr, paid into CommBank</button>' +
+        '<button class="ai-eg">My ANZ balance is now $41,200</button>' +
+        '<button class="ai-eg">Add a $900 one-off car repair expense on the 12th</button>' +
+        '<button class="ai-eg">I stopped working at King Kitchen</button>' +
+      '</div>' +
+      '<textarea id="aiMsg" rows="3" class="ai-input" placeholder="Type what changed…"></textarea>' +
+      '<div id="aiOut" class="ai-out"></div>',
+      '<button class="pill-btn" data-close-modal>Close</button><button class="pill-btn primary" data-act="ai-send">Ask</button>');
+    $$(".ai-eg").forEach(function (b) { b.addEventListener("click", function () { $("#aiMsg").value = b.textContent; }); });
+    setTimeout(function () { var m = $("#aiMsg"); if (m) m.focus(); }, 60);
+  }
+  function aiSend() {
+    var msg = ($("#aiMsg") && $("#aiMsg").value || "").trim(); if (!msg) return;
+    var out = $("#aiOut"); out.innerHTML = '<div class="ai-thinking"><span class="sb-dot"></span> Thinking…</div>';
+    Sync.assistant(msg, buildAIContext()).then(function (res) {
+      window.__aiOps = (res && res.operations) || [];
+      if (res && res.clarify && (!res.operations || !res.operations.length)) {
+        out.innerHTML = '<div class="ai-clarify">' + esc(res.clarify) + '</div>'; return;
+      }
+      if (!window.__aiOps.length) { out.innerHTML = '<div class="ai-clarify">I couldn’t turn that into a change — try being more specific.</div>'; return; }
+      out.innerHTML = '<div class="ai-summary">' + esc(res.summary || "Here’s what I’ll change:") + '</div>' +
+        '<ul class="ai-ops">' + window.__aiOps.map(function (op) { return '<li>' + describeOp(op) + '</li>'; }).join("") + '</ul>' +
+        '<button class="pill-btn primary" data-act="ai-apply" style="width:100%;justify-content:center;margin-top:6px">Apply these changes</button>';
+    }).catch(function (e) {
+      if (e && (e.code === 400) && /key/i.test(e.message || "")) { out.innerHTML = '<div class="ai-clarify">You need a free AI key first. <button class="mini-link" data-act="ai-key">Set it up →</button></div>'; return; }
+      out.innerHTML = '<div class="ai-clarify bad">' + esc((e && e.message) || "Something went wrong.") + '</div>';
+    });
+  }
+  function aiApply() {
+    var ops = window.__aiOps || []; var n = applyOps(ops);
+    commit(); closeModal(); render(); toast(n ? "Done ✓ Updated " + n + " thing" + (n > 1 ? "s" : "") : "Nothing to apply");
+  }
+  function aiKeyModal() {
+    modal("Set up the free AI key",
+      '<ol class="ai-steps">' +
+        '<li>Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> (sign in with Google).</li>' +
+        '<li>Click <b>Create API key</b> → copy it (starts with <code>AIza…</code>).</li>' +
+        '<li>Paste it below. It’s stored privately in your own Supabase — never in the app.</li>' +
+      '</ol>' +
+      '<input type="password" id="aiKey" class="lock-input" placeholder="AIza…" autocomplete="off" style="text-align:left;letter-spacing:0">' +
+      '<div id="aiKeyErr" class="lock-err"></div>',
+      '<button class="pill-btn" data-close-modal>Cancel</button><button class="pill-btn primary" data-act="ai-savekey">Save key</button>');
+    setTimeout(function () { var k = $("#aiKey"); if (k) k.focus(); }, 60);
+  }
+  function aiSaveKey() {
+    var key = ($("#aiKey") && $("#aiKey").value || "").trim();
+    if (key.length < 20) { $("#aiKeyErr").textContent = "That doesn’t look like a key."; return; }
+    Sync.setKey(key).then(function () { closeModal(); toast("AI key saved ✓ — try the ✨ button"); }).catch(function (e) { $("#aiKeyErr").textContent = (e && e.message) || "Failed to save."; });
   }
 
   /* =============================================================== modals */
@@ -574,6 +730,111 @@
     commit(); closeModal(); render(); toast("Account saved");
   }
   function deleteAccount(id) { state.accounts = (state.accounts || []).filter(function (a) { return a.id !== id; }); commit(); closeModal(); render(); toast("Account removed"); }
+
+  /* ---- income stream editor (drives schedule + weekly + monthly + net worth + tax) ---- */
+  function decToHHMM(d) { if (d == null) return ""; var h = Math.floor(d), m = Math.round((d - h) * 60); if (m === 60) { h++; m = 0; } if (h >= 24) h -= 24; return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0"); }
+  function hhmmToDec(s) { if (!s) return null; var p = s.split(":"); return (+p[0]) + (+p[1]) / 60; }
+  function shiftRowHTML(sh, biz) {
+    sh = sh || { day: 0, start: 9, end: 17, pay: 0, label: "" };
+    var dayOpts = M.DAYS_LONG.map(function (d, i) { return '<option value="' + i + '" ' + (sh.day === i ? "selected" : "") + '>' + d + '</option>'; }).join("");
+    return '<div class="shift-row' + (biz ? " biz" : "") + '">' +
+      '<select class="sr-day">' + dayOpts + '</select>' +
+      (biz ? '' :
+        '<input type="time" class="sr-start" value="' + decToHHMM(sh.start) + '" title="start">' +
+        '<input type="time" class="sr-end" value="' + decToHHMM(sh.end) + '" title="end">' +
+        '<input type="number" class="sr-rate" step="0.01" min="0" placeholder="$/hr" title="optional hourly rate — auto-fills pay">') +
+      '<input type="number" class="sr-pay" step="0.01" min="0" placeholder="$ pay" value="' + (sh.pay || "") + '" title="total pay for this shift">' +
+      (biz ? '' : '<input type="text" class="sr-label" placeholder="client / role" value="' + esc(sh.label || "") + '">') +
+      '<button type="button" class="x-btn" data-del-shift-row>' + icoX() + '</button>' +
+      '</div>';
+  }
+  function sourceModal(id) {
+    var accts = state.accounts || [];
+    var src = id ? M.sourceById(state, id) : null, isNew = !src || !src.name;
+    src = (id && src && src.name) ? src : { id: "src_" + Date.now().toString(36), name: "", account: (accts[0] || {}).id, color: "#34e3ff", businessIncome: false, note: "" };
+    var biz = !!src.businessIncome;
+    var shifts = (state.shifts || []).filter(function (s) { return s.sourceId === src.id; });
+    if (!shifts.length) shifts = [{ day: 0, start: 9, end: 17, pay: 0, label: "" }];
+    modal(isNew ? "Add income stream" : "Edit income stream",
+      '<form id="srcForm" class="form">' +
+        '<input type="hidden" name="id" value="' + esc(src.id) + '">' +
+        '<label class="field"><span>Name</span><input name="name" value="' + esc(src.name) + '" placeholder="e.g. Cafe job" required></label>' +
+        '<div class="form-2">' +
+          '<label class="field"><span>Pays into</span><select name="account">' + accts.map(function (a) { return '<option value="' + a.id + '" ' + (src.account === a.id ? "selected" : "") + '>' + esc(a.name) + '</option>'; }).join("") + '</select></label>' +
+          '<label class="field"><span>Colour</span><input type="color" name="color" value="' + (src.color || "#34e3ff") + '"></label>' +
+        '</div>' +
+        '<label class="check"><input type="checkbox" name="biz" id="srcBiz" ' + (biz ? "checked" : "") + '><span>Passive / business income — paid per day, no fixed clock hours (like a daily profit)</span></label>' +
+        '<div class="shift-head"><span>' + (biz ? "Days &amp; daily amount" : "Shifts — when you work &amp; what you earn") + '</span></div>' +
+        '<div id="shiftRows">' + shifts.map(function (s) { return shiftRowHTML(s, biz); }).join("") + '</div>' +
+        '<button type="button" class="ghost-btn" data-add-shift>+ Add ' + (biz ? "day" : "shift") + '</button>' +
+        '<label class="field" style="margin-top:14px"><span>Note (optional)</span><input name="note" value="' + esc(src.note || "") + '" placeholder="anything to remember about this income"></label>' +
+        '<div id="srcPreview" class="src-preview"></div>' +
+      '</form>',
+      (isNew ? '' : '<button class="pill-btn danger" data-del-source="' + esc(src.id) + '">Delete stream</button>') +
+      '<button class="pill-btn" data-close-modal>Cancel</button><button class="pill-btn primary" data-act="save-source">Save</button>');
+    var rows = $("#shiftRows");
+    $("[data-add-shift]").addEventListener("click", function () { rows.insertAdjacentHTML("beforeend", shiftRowHTML(null, $("#srcBiz").checked)); updateSrcPreview(); });
+    $("#srcBiz").addEventListener("change", function () {
+      var cur = readShiftRows(); rows.innerHTML = cur.map(function (s) { return shiftRowHTML(s, this.checked); }.bind(this)).join("");
+      $(".shift-head span").innerHTML = this.checked ? "Days &amp; daily amount" : "Shifts — when you work &amp; what you earn";
+      $("[data-add-shift]").textContent = "+ Add " + (this.checked ? "day" : "shift");
+      updateSrcPreview();
+    });
+    rows.addEventListener("input", function (e) {
+      var row = e.target.closest(".shift-row"); if (!row) return;
+      // auto-fill pay from rate × hours
+      if (e.target.classList.contains("sr-rate") || e.target.classList.contains("sr-start") || e.target.classList.contains("sr-end")) {
+        var rate = parseFloat((row.querySelector(".sr-rate") || {}).value);
+        var st = hhmmToDec((row.querySelector(".sr-start") || {}).value), en = hhmmToDec((row.querySelector(".sr-end") || {}).value);
+        if (rate && st != null && en != null) { var hrs = (en <= st ? en + 24 : en) - st; row.querySelector(".sr-pay").value = (hrs * rate).toFixed(2); }
+      }
+      updateSrcPreview();
+    });
+    rows.addEventListener("click", function (e) { var b = e.target.closest("[data-del-shift-row]"); if (b) { b.closest(".shift-row").remove(); updateSrcPreview(); } });
+    updateSrcPreview();
+  }
+  function readShiftRows() {
+    return $$("#shiftRows .shift-row").map(function (row) {
+      var biz = row.classList.contains("biz");
+      var startEl = row.querySelector(".sr-start"), endEl = row.querySelector(".sr-end");
+      var start = startEl ? hhmmToDec(startEl.value) : null, end = endEl ? hhmmToDec(endEl.value) : null;
+      if (!biz && end === 0 && start > 0) end = 24; // midnight end
+      return { day: +row.querySelector(".sr-day").value, start: start, end: end, pay: parseFloat(row.querySelector(".sr-pay").value) || 0, label: (row.querySelector(".sr-label") || {}).value || "" };
+    });
+  }
+  function updateSrcPreview() {
+    var el = $("#srcPreview"); if (!el) return;
+    var wk = readShiftRows().reduce(function (s, r) { return s + (+r.pay || 0); }, 0);
+    el.innerHTML = 'Weekly from this stream: <b>' + M.money0(wk) + '</b> · ' + M.money0(wk * 52) + '/yr';
+  }
+  function saveSource() {
+    var f = $("#srcForm"); if (!f || !f.reportValidity()) return;
+    var biz = $("#srcBiz").checked;
+    var id = f.id.value, name = f.name.value.trim();
+    var rows = readShiftRows().filter(function (r) { return (+r.pay || 0) > 0 || (!biz && r.start != null); });
+    if (!rows.length) { toast("Add at least one shift with pay"); return; }
+    // upsert source
+    var srcObj = { id: id, name: name, short: name.length > 14 ? name.slice(0, 12) + "…" : name, account: f.account.value, color: f.color.value, businessIncome: biz, kind: biz ? "business" : "work", note: f.note.value.trim() };
+    var i = (state.incomeSources || []).findIndex(function (s) { return s.id === id; });
+    if (i >= 0) state.incomeSources[i] = Object.assign(state.incomeSources[i], srcObj); else state.incomeSources.push(srcObj);
+    // replace this source's shifts
+    state.shifts = (state.shifts || []).filter(function (s) { return s.sourceId !== id; });
+    rows.forEach(function (r, n) {
+      state.shifts.push({
+        id: id + "_s" + n, sourceId: id, day: r.day,
+        start: biz ? null : r.start, end: biz ? null : r.end,
+        pay: +r.pay || 0, label: biz ? name : (r.label || name), rateNote: "", kind: biz ? "business" : "shift"
+      });
+    });
+    commit(); closeModal(); render(); toast("“" + name + "” saved — dashboard updated ✓");
+  }
+  function deleteSource(id) {
+    var src = M.sourceById(state, id);
+    if (!confirm("Delete “" + (src.name || "this") + "” and all its shifts? This updates your whole dashboard.")) return;
+    state.incomeSources = (state.incomeSources || []).filter(function (s) { return s.id !== id; });
+    state.shifts = (state.shifts || []).filter(function (s) { return s.sourceId !== id; });
+    commit(); closeModal(); render(); toast("Income stream removed");
+  }
 
   /* ---- statement import flow ---- */
   function importStatementModal() {
@@ -698,7 +959,7 @@
   /* ============================================================== events */
   function bind() {
     document.addEventListener("click", function (e) {
-      var t = e.target.closest("[data-act],[data-close-modal],[data-month],[data-del-entry],[data-edit-entry],[data-edit-acct],[data-del-acct],[data-month-go],[data-shift]");
+      var t = e.target.closest("[data-act],[data-close-modal],[data-month],[data-del-entry],[data-edit-entry],[data-edit-acct],[data-del-acct],[data-edit-source],[data-del-source],[data-month-go],[data-shift]");
       if (!t) return;
       if (t.hasAttribute("data-close-modal")) { closeModal(); return; }
       var act = t.getAttribute("data-act");
@@ -706,6 +967,8 @@
       if (t.hasAttribute("data-month-go")) { activeMonth = t.getAttribute("data-month-go"); location.hash = "#expenses"; return; }
       if (t.hasAttribute("data-del-entry")) { delEntry(t.getAttribute("data-del-entry")); return; }
       if (t.hasAttribute("data-edit-entry")) { entryModal(t.getAttribute("data-edit-entry")); return; }
+      if (t.hasAttribute("data-edit-source")) { sourceModal(t.getAttribute("data-edit-source")); return; }
+      if (t.hasAttribute("data-del-source")) { deleteSource(t.getAttribute("data-del-source")); return; }
       if (t.hasAttribute("data-edit-acct")) { accountModal(t.getAttribute("data-edit-acct")); return; }
       if (t.hasAttribute("data-del-acct")) { deleteAccount(t.getAttribute("data-del-acct")); return; }
       if (t.hasAttribute("data-shift")) { showShift(t.getAttribute("data-shift")); return; }
@@ -717,6 +980,13 @@
         case "save-entry": saveEntry(); break;
         case "add-account": accountModal(null); break;
         case "save-account": saveAccount(); break;
+        case "add-source": sourceModal(null); break;
+        case "save-source": saveSource(); break;
+        case "ai-open": aiFabClick(); break;
+        case "ai-send": aiSend(); break;
+        case "ai-apply": aiApply(); break;
+        case "ai-key": aiKeyModal(); break;
+        case "ai-savekey": aiSaveKey(); break;
         case "commit-import": commitImport(); break;
         case "reset": if (confirm("Reset to demo data? Your entries in this browser will be cleared.")) { state = S.reset(); render(); toast("Reset done"); } break;
         case "sync-pull": if (global.Sync) { updateSyncBadge("syncing"); Sync.pull().then(function (b) { if (b && b.data) { state = S.replace(b.data); render(); } updateSyncBadge("synced"); toast("Up to date ✓"); }).catch(function () { updateSyncBadge("offline"); toast("Couldn’t refresh"); }); } break;
@@ -797,6 +1067,7 @@
   function icoX() { return svg('<path d="M6 6l12 12M18 6L6 18"/>'); }
   function icoPencil() { return svg('<path d="M4 20h4l10-10-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>', "ico-sm"); }
   function icoNote() { return svg('<path d="M5 4h14v12l-4 4H5z"/><path d="M15 20v-4h4M9 9h6M9 13h4"/>', "ico-xs"); }
+  function icoSpark() { return svg('<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.7 2 .3 .3 2 .7-2 .7-.3.3-.7 2-.7-2-.3-.3-2-.7 2-.7.3-.3z"/>'); }
   function svg(inner, cls) { return '<svg class="ico ' + (cls || "") + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + '</svg>'; }
 
   /* ---------------------------------------------------------- cloud sync */
