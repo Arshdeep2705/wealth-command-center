@@ -1,14 +1,16 @@
 /* Service worker — offline-first app shell + runtime font caching */
-var CACHE = "wcc-v2";
+var CACHE = "wcc-v3";
 var SHELL = [
   "./",
   "./index.html",
   "./manifest.webmanifest",
   "./assets/css/styles.css",
+  "./assets/js/config.js",
   "./assets/js/state.js",
   "./assets/js/model.js",
   "./assets/js/charts.js",
   "./assets/js/importer.js",
+  "./assets/js/sync.js",
   "./assets/js/app.js",
   "./assets/icons/icon.svg",
   "./assets/icons/icon-192.png",

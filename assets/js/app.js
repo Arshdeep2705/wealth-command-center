@@ -20,7 +20,7 @@
   function $(s, r) { return (r || document).querySelector(s); }
   function $$(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
   function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
-  function commit() { S.save(state); }
+  function commit() { S.save(state); if (global.Sync && Sync.enabled() && Sync.hasLocalPin()) Sync.queuePush(state); }
   function delta(n) { return (n >= 0 ? "+" : "") + M.money0(n); }
 
   function todayInfo() {
@@ -56,6 +56,8 @@
         return '<a href="#' + n.id + '" class="tab" data-nav="' + n.id + '"><span class="t-ico">' + n.icon() + '</span><span>' + n.m + '</span></a>';
       }).join("") + '</nav>' +
       '<div class="modal-root" id="modalRoot"></div>' +
+      '<div class="lock-root" id="lockRoot"></div>' +
+      '<div class="sync-badge" id="syncBadge" hidden></div>' +
       '<div class="toast" id="toast"></div>';
   }
 
@@ -442,8 +444,18 @@
   /* ----------------------------------------------------------- SETTINGS */
   function viewSettings() {
     var s = state.settings;
-    return topbar("Settings & Data", "Your data lives only in this browser. Back it up.") +
+    var syncOn = global.Sync && Sync.enabled();
+    var linked = syncOn && Sync.hasLocalPin();
+    return topbar("Settings & Data", "Cloud sync keeps every device up to date. Back up anytime.") +
       '<div class="grid">' +
+        card(cardH("Cloud sync", linked ? '<span class="chip" style="--c:var(--good)">Connected</span>' : '<span class="chip" style="--c:var(--warn)">Not linked</span>') +
+          (!syncOn ? '<p class="muted small">Cloud sync is off in this build.</p>'
+           : linked
+             ? '<p class="muted small">This device is synced to your private cloud. Changes you make here appear on your other devices automatically.</p>' +
+               '<div class="set-row"><div><strong>Refresh from cloud</strong><p class="muted small">Pull the latest data now.</p></div><button class="pill-btn" data-act="sync-pull">Refresh</button></div>' +
+               '<div class="set-row"><div><strong>Change passcode</strong><p class="muted small">Updates it for all devices.</p></div><button class="pill-btn" data-act="change-pin">Change</button></div>' +
+               '<div class="set-row danger"><div><strong>Lock this device</strong><p class="muted small">Forget the passcode here (data stays in the cloud).</p></div><button class="pill-btn danger" data-act="sync-signout">Lock</button></div>'
+             : '<p class="muted small">Not linked on this device.</p><div class="set-row"><div><strong>Connect to cloud</strong><p class="muted small">Enter your passcode to sync this device.</p></div><button class="pill-btn primary" data-act="sync-link">Connect</button></div>')) +
         card(cardH("Your data") +
           '<div class="set-row"><div><strong>Export backup</strong><p class="muted small">Download a .json with everything. Save it to OneDrive to open on your phone.</p></div><button class="pill-btn primary" data-act="export">' + icoDownload() + ' Export</button></div>' +
           '<div class="set-row"><div><strong>Import backup</strong><p class="muted small">Load a .json backup (replaces current data).</p></div><button class="pill-btn" data-act="import">' + icoUpload() + ' Import</button></div>' +
@@ -597,6 +609,22 @@
     commit(); closeModal(); render(); toast(added + " transactions imported");
   }
 
+  /* ---- change passcode ---- */
+  function changePinModal() {
+    modal("Change passcode", '<form id="pinForm" class="form">' +
+      '<label class="field"><span>Current passcode</span><input type="password" name="cur" autocomplete="off" required></label>' +
+      '<label class="field"><span>New passcode</span><input type="password" name="next" autocomplete="off" minlength="4" required></label>' +
+      '<label class="field"><span>Confirm new passcode</span><input type="password" name="next2" autocomplete="off" minlength="4" required></label>' +
+      '<div id="pinErr" class="lock-err"></div></form>',
+      '<button class="pill-btn" data-close-modal>Cancel</button><button class="pill-btn primary" data-act="save-pin">Update</button>');
+  }
+  function doChangePin() {
+    var f = $("#pinForm"); if (!f || !f.reportValidity()) return;
+    if (f.next.value !== f.next2.value) { $("#pinErr").textContent = "New passcodes don’t match."; return; }
+    Sync.changePin(f.cur.value, f.next.value).then(function () { closeModal(); toast("Passcode updated ✓"); })
+      .catch(function (e) { $("#pinErr").textContent = e && e.code === 401 ? "Current passcode is wrong." : (e.message || "Failed."); });
+  }
+
   /* ---- export / import backup ---- */
   function exportBackup() {
     var blob = new Blob([S.exportJSON(state)], { type: "application/json" });
@@ -611,8 +639,11 @@
       var f = fi.files[0]; if (!f) return;
       var r = new FileReader();
       r.onload = function () {
-        try { state = S.replace(JSON.parse(String(r.result))); render(); toast("Data imported ✓"); }
-        catch (e) { toast("Could not read that file"); }
+        try {
+          state = S.replace(JSON.parse(String(r.result))); render();
+          if (global.Sync && Sync.enabled() && Sync.hasLocalPin()) Sync.queuePush(state);
+          toast("Data imported ✓");
+        } catch (e) { toast("Could not read that file"); }
       };
       r.readAsText(f);
     };
@@ -642,6 +673,11 @@
         case "save-account": saveAccount(); break;
         case "commit-import": commitImport(); break;
         case "reset": if (confirm("Reset to demo data? Your entries in this browser will be cleared.")) { state = S.reset(); render(); toast("Reset done"); } break;
+        case "sync-pull": if (global.Sync) { updateSyncBadge("syncing"); Sync.pull().then(function (b) { if (b && b.data) { state = S.replace(b.data); render(); } updateSyncBadge("synced"); toast("Up to date ✓"); }).catch(function () { updateSyncBadge("offline"); toast("Couldn’t refresh"); }); } break;
+        case "sync-link": showLock("unlock"); break;
+        case "change-pin": changePinModal(); break;
+        case "sync-signout": if (confirm("Lock this device? You’ll need your passcode to view data here again. Your data stays safe in the cloud.")) { Sync.signOut(); showLock("unlock"); } break;
+        case "save-pin": doChangePin(); break;
         case "install": doInstall(); break;
         case "dismiss-demo": var b = $("#demoBanner"); if (b) b.remove(); break;
       }
@@ -721,6 +757,82 @@
   function icoPencil() { return svg('<path d="M4 20h4l10-10-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>', "ico-sm"); }
   function svg(inner, cls) { return '<svg class="ico ' + (cls || "") + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + '</svg>'; }
 
+  /* ---------------------------------------------------------- cloud sync */
+  function setupSync() {
+    if (!(global.Sync && Sync.enabled())) return;          // pure offline build
+    Sync.on("status", updateSyncBadge);
+    Sync.on("remote", function (b) { if (b && b.data) { state = S.replace(b.data); render(); toast("Updated from another device"); } });
+    Sync.on("refresh", function () { Sync.pull().then(function (b) { if (b && b.data) { state = S.replace(b.data); render(); updateSyncBadge("synced"); } }).catch(function () {}); });
+    Sync.on("locked", function () { showLock("unlock"); });
+
+    if (Sync.hasLocalPin()) {
+      updateSyncBadge("syncing");
+      Sync.pull().then(function (b) { if (b && b.data) { state = S.replace(b.data); render(); } updateSyncBadge("synced"); })
+        .catch(function (e) { if (e && e.code === 401) showLock("unlock"); else updateSyncBadge("offline"); });
+    } else {
+      Sync.status().then(function (st) { showLock(st && st.hasPin ? "unlock" : "setup"); })
+        .catch(function () { updateSyncBadge("offline"); }); // backend unreachable → use local cache
+    }
+  }
+
+  function showLock(mode) {
+    mode = mode || "unlock";
+    var setup = mode === "setup";
+    document.getElementById("lockRoot").innerHTML =
+      '<div class="lock"><div class="lock-card">' +
+        '<div class="lock-mark">' + icoDiamond() + '</div>' +
+        '<h2>' + (setup ? "Secure your dashboard" : "Welcome back, Arsh") + '</h2>' +
+        '<p class="muted">' + (setup
+          ? "Create a passcode. You’ll use this same passcode to unlock your data on every device — phone and laptop. It keeps your data in sync."
+          : "Enter your passcode to load your latest data.") + '</p>' +
+        '<input type="password" id="pinInput" inputmode="text" autocomplete="off" placeholder="Passcode" class="lock-input" />' +
+        (setup ? '<input type="password" id="pinInput2" autocomplete="off" placeholder="Confirm passcode" class="lock-input" />' : '') +
+        '<div id="lockErr" class="lock-err"></div>' +
+        '<button class="pill-btn primary lock-btn" id="lockGo">' + (setup ? "Create & sync" : "Unlock") + '</button>' +
+        (setup ? '<p class="muted xs" style="margin-top:12px">Tip: choose something you’ll remember — there’s no email reset. You can change it later in Settings.</p>'
+               : '<button class="mini-link" id="lockOffline" style="margin-top:12px">Continue offline (view only)</button>') +
+      '</div></div>';
+    var root = document.getElementById("lockRoot"); root.classList.add("show");
+    var input = document.getElementById("pinInput"), go = document.getElementById("lockGo");
+    setTimeout(function () { input.focus(); }, 50);
+    function fail(m) { document.getElementById("lockErr").textContent = m; go.disabled = false; go.textContent = setup ? "Create & sync" : "Unlock"; }
+    function submit() {
+      var pin = input.value.trim();
+      if (pin.length < 4) return fail("Passcode must be at least 4 characters.");
+      if (setup) { var p2 = (document.getElementById("pinInput2").value || "").trim(); if (pin !== p2) return fail("Passcodes don’t match."); }
+      go.disabled = true; go.textContent = "Working…";
+      (setup ? Sync.setup(pin, state) : Sync.unlock(pin)).then(function (b) {
+        if (b && b.data) state = S.replace(b.data);
+        hideLock(); render(); updateSyncBadge("synced");
+        toast(setup ? "Synced ✓ Your data is now on all your devices" : "Unlocked ✓");
+      }).catch(function (e) {
+        if (e && e.code === "SETUP") { showLock("setup"); return; }
+        fail(e && e.code === 401 ? "Wrong passcode — try again." : (e && e.message) || "Couldn’t connect. Check your internet.");
+      });
+    }
+    go.onclick = submit;
+    input.onkeydown = function (e) { if (e.key === "Enter") submit(); };
+    var off = document.getElementById("lockOffline");
+    if (off) off.onclick = function () { hideLock(); updateSyncBadge("offline"); toast("Offline mode — changes won’t sync until you unlock"); };
+  }
+  function hideLock() { var r = document.getElementById("lockRoot"); if (r) { r.classList.remove("show"); r.innerHTML = ""; } }
+
+  var badgeFadeT;
+  function updateSyncBadge(st) {
+    var el = document.getElementById("syncBadge"); if (!el) return;
+    var map = {
+      syncing: ["Syncing…", "is-syncing"], pending: ["Syncing…", "is-syncing"],
+      synced: ["Synced", "is-synced"], offline: ["Offline", "is-offline"],
+      error: ["Sync error", "is-error"], locked: ["Locked", "is-offline"]
+    };
+    var m = map[st] || map.synced;
+    el.className = "sync-badge " + m[1]; el.hidden = false;
+    el.innerHTML = '<span class="sb-dot"></span>' + m[0];
+    clearTimeout(badgeFadeT);
+    if (st === "synced") badgeFadeT = setTimeout(function () { el.classList.add("fade"); }, 2200);
+    else el.classList.remove("fade");
+  }
+
   /* --------------------------------------------------------------- boot */
   function init() {
     M = global.Model; C = global.Charts; S = global.AppState; IMP = global.Importer;
@@ -731,6 +843,7 @@
     bind();
     if (!location.hash) location.hash = "#overview";
     render();
+    setupSync();
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", function () { navigator.serviceWorker.register("./sw.js").catch(function () {}); });
     }
