@@ -5,7 +5,7 @@
   "use strict";
   var M, C, S, IMP, state;
   // Visible build tag — keep in lock-step with CACHE in sw.js. Lets us SEE which build a device is actually running.
-  var APP_VERSION = "v7";
+  var APP_VERSION = "v8";
 
   var NAV = [
     { id: "overview", label: "Command", m: "Home", icon: icoGrid },
@@ -782,12 +782,12 @@
   function aiClearChat() { aiThreadSet([]); renderAiThread(); }
   function aiKeyModal() {
     modal("Set up the free AI key",
-      '<ol class="ai-steps">' +
-        '<li>Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> (sign in with Google).</li>' +
-        '<li>Click <b>Create API key</b> → copy it (starts with <code>AIza…</code>).</li>' +
-        '<li>Paste it below. It’s stored privately in your own Supabase — never in the app.</li>' +
-      '</ol>' +
-      '<input type="password" id="aiKey" class="lock-input" placeholder="AIza…" autocomplete="off" style="text-align:left;letter-spacing:0">' +
+      '<p class="muted small">Paste a <b>Groq</b> key (starts <code>gsk_…</code>, recommended — faster &amp; private) or a <b>Google Gemini</b> key (<code>AIza…</code>). I’ll detect which it is. Stored privately in your own Supabase — never in the app.</p>' +
+      '<ul class="ai-steps">' +
+        '<li><b>Groq:</b> <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a> → Create API key → copy.</li>' +
+        '<li><b>Gemini:</b> <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> → Create API key → copy.</li>' +
+      '</ul>' +
+      '<input type="password" id="aiKey" class="lock-input" placeholder="gsk_… or AIza…" autocomplete="off" style="text-align:left;letter-spacing:0">' +
       '<div id="aiKeyErr" class="lock-err"></div>',
       '<button class="pill-btn" data-close-modal>Cancel</button><button class="pill-btn primary" data-act="ai-savekey">Save key</button>');
     setTimeout(function () { var k = $("#aiKey"); if (k) k.focus(); }, 60);
@@ -795,7 +795,9 @@
   function aiSaveKey() {
     var key = ($("#aiKey") && $("#aiKey").value || "").trim();
     if (key.length < 20) { $("#aiKeyErr").textContent = "That doesn’t look like a key."; return; }
-    Sync.setKey(key).then(function () { closeModal(); toast("AI key saved ✓ — try the ✨ button"); }).catch(function (e) { $("#aiKeyErr").textContent = (e && e.message) || "Failed to save."; });
+    var isGroq = /^gsk_/i.test(key);
+    var save = isGroq ? Sync.setGroqKey(key) : Sync.setKey(key);
+    save.then(function () { closeModal(); toast((isGroq ? "Groq" : "Gemini") + " key saved ✓ — try the ✨ button"); }).catch(function (e) { $("#aiKeyErr").textContent = (e && e.message) || "Failed to save."; });
   }
 
   /* =============================================================== modals */

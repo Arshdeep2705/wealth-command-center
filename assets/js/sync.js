@@ -90,6 +90,7 @@
   // ---- AI assistant ----
   function hasKey() { return call("haskey", { pin: getPin() }).then(function (r) { return !!(r.body && r.body.hasKey); }); }
   function setKey(key) { return call("setkey", { pin: getPin(), key: key }).then(function (r) { if (r.status !== 200) throw err(r); return r.body; }); }
+  function setGroqKey(key) { return call("setgroqkey", { pin: getPin(), key: key }).then(function (r) { if (r.status !== 200) throw err(r); return r.body; }); }
   function assistant(message, context) {
     return call("assistant", { pin: getPin(), message: message, context: context }).then(function (r) {
       if (r.status !== 200) throw err(r);
@@ -110,7 +111,7 @@
   global.Sync = {
     enabled: enabled, hasLocalPin: hasLocalPin, status: status, setup: setup, unlock: unlock,
     pull: pull, push: pushNow, queuePush: queuePush, flush: flush, changePin: changePin,
-    signOut: signOut, hasKey: hasKey, setKey: setKey, assistant: assistant,
+    signOut: signOut, hasKey: hasKey, setKey: setKey, setGroqKey: setGroqKey, assistant: assistant,
     on: on, isDirty: function () { return dirty; }, base: function () { return baseUpdatedAt; }
   };
 })(window);
