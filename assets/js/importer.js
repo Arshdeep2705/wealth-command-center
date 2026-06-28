@@ -206,7 +206,120 @@
     return { transactions: txns, map: map, rowCount: dataRows.length, directionUnknown: directionUnknown };
   }
 
-  /* ---- PDF best-effort (lazy-loads pdf.js if online) ----------------------- */
+  /* ---- PDF parsing (coordinate-aware; lazy-loads pdf.js if online) ----------
+     Bank PDFs (esp. CommBank) put Debit/Credit/Amount and the running Balance in
+     separate COLUMNS, often on a different visual row than the transaction's date.
+     We rebuild rows by Y, columns by X (from the header anchors), walk each
+     transaction (date-led, possibly multi-row), and derive the amount + direction
+     from the running BALANCE delta (authoritative), with the Debit/Credit/Amount
+     column as fallback. This makes expenses-vs-income exact and misses nothing. */
+  var MON = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+  var PDF_NOISE = /^(Card\s+xx|Value Date|to PayID Phone$|PayID Phone|from CommBank App|CommBank App$)/i;
+  var PDF_FOOTER = /while this letter|we.?re not responsible|reliance on this information|any pending|created \d|transaction summary v|opening balance|closing balance|brought forward|carried forward|page \d+ of|account number|cheque proceeds|available when|^cleared|^date\b/i;
+  function pdfIsMoney(s) { return /\d[\d,]*\.\d{2}/.test(s); }
+  function pdfMoneyVal(s) { var neg = /^\s*[-(]/.test(s); var v = parseFloat(String(s).replace(/[^0-9.]/g, "")); return isNaN(v) ? NaN : (neg ? -v : v); }
+  function pdfBuildRows(items) {
+    var rows = [];
+    items.forEach(function (it) {
+      if (!it.str || !it.str.trim()) return;
+      var x = Math.round(it.transform[4]), y = Math.round(it.transform[5]);
+      if (x < 45) return; // drop far-left margin noise (barcodes, print codes)
+      var row = null;
+      for (var i = 0; i < rows.length; i++) { if (Math.abs(rows[i].y - y) <= 3) { row = rows[i]; break; } }
+      if (!row) { row = { y: y, cells: [] }; rows.push(row); }
+      row.cells.push({ x: x, s: it.str.trim() });
+    });
+    rows.forEach(function (r) { r.cells.sort(function (a, b) { return a.x - b.x; }); });
+    rows.sort(function (a, b) { return b.y - a.y; });
+    return rows;
+  }
+  function pdfFindHeader(rows) {
+    for (var i = 0; i < rows.length; i++) {
+      var txt = rows[i].cells.map(function (c) { return c.s; }).join(" ");
+      if (/Balance/i.test(txt) && /Date/i.test(txt) && /(Amount|Debit)/i.test(txt)) {
+        var a = {};
+        rows[i].cells.forEach(function (c) {
+          if (/^Date/i.test(c.s)) a.date = c.x;
+          else if (/Transaction/i.test(c.s)) a.desc = c.x;
+          else if (/^Debit/i.test(c.s)) a.debit = c.x;
+          else if (/^Credit/i.test(c.s)) a.credit = c.x;
+          else if (/^Amount/i.test(c.s)) a.amount = c.x;
+          else if (/^Balance/i.test(c.s)) a.balance = c.x;
+        });
+        if (a.balance != null && (a.amount != null || a.debit != null)) return a;
+      }
+    }
+    return null;
+  }
+  function pdfLeadingDate(s, ys) {
+    var m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,})\.?\s+(\d{4})\b/);
+    if (m) { var mo = MON[m[2].slice(0, 3).toLowerCase()]; if (mo == null) return null; ys.cur = +m[3]; ys.lastMo = mo; return { day: +m[1], mo: mo, yr: +m[3], rest: s.slice(m[0].length).trim() }; }
+    m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,})\.?(?!\w)/);
+    if (m) { var mo2 = MON[m[2].slice(0, 3).toLowerCase()]; if (mo2 == null) return null; var yr = ys.cur || new Date().getFullYear(); if (ys.lastMo != null && mo2 < ys.lastMo - 1) yr += 1; ys.cur = yr; ys.lastMo = mo2; return { day: +m[1], mo: mo2, yr: yr, rest: s.slice(m[0].length).trim() }; }
+    return null;
+  }
+  function pdfIso(d) { return d.yr + "-" + String(d.mo + 1).padStart(2, "0") + "-" + String(d.day).padStart(2, "0"); }
+  // Parse a CommBank-style statement from per-page text items. Returns [] if no header found.
+  function parseStatement(pages) {
+    var raw = [], cur = null, prevBal = null, ys = { cur: null, lastMo: null }, anchors = null, done = false;
+    function pushCur() { if (cur && cur.date) raw.push(cur); cur = null; }
+    for (var pi = 0; pi < pages.length && !done; pi++) {
+      var rows = pdfBuildRows(pages[pi].items);
+      var h = pdfFindHeader(rows); if (h) anchors = h;
+      if (!anchors) continue;
+      var balBound = anchors.balance - 30;
+      var amtStart = (anchors.amount != null ? anchors.amount : anchors.debit) - 30;
+      var creditBound = anchors.credit != null ? (anchors.debit + anchors.credit) / 2 : null;
+      for (var ri = 0; ri < rows.length && !done; ri++) {
+        var r = rows[ri];
+        var txt = r.cells.map(function (c) { return c.s; }).join(" ");
+        if (/CLOSING BALANCE/.test(txt) && (cur || raw.length)) { pushCur(); done = true; break; } // table-end marker (uppercase), not the top summary "Closing Balance"
+        var first = r.cells[0];
+        var dt = first ? pdfLeadingDate(first.s, ys) : null;
+        if (/OPENING BALANCE/i.test(txt)) { var ob = r.cells.filter(function (c) { return pdfIsMoney(c.s) && c.x >= balBound; }).pop(); if (ob) prevBal = pdfMoneyVal(ob.s); continue; }
+        if (!dt && /^Date\b/i.test(first ? first.s : "") && /Balance/i.test(txt)) continue; // header row
+        // classify money cells
+        var balCell = null, amtCell = null;
+        r.cells.forEach(function (c) { if (!pdfIsMoney(c.s)) return; if (c.x >= balBound) balCell = c; else if (c.x >= amtStart) amtCell = c; });
+        if (dt) {
+          pushCur();
+          cur = { date: pdfIso(dt), desc: [], bal: null, colAmt: null };
+          if (dt.rest) cur.desc.push(dt.rest);
+          r.cells.slice(1).forEach(function (c) { if (pdfIsMoney(c.s)) return; if (c.x < amtStart) cur.desc.push(c.s); });
+        } else if (cur && !PDF_FOOTER.test(txt)) {
+          r.cells.forEach(function (c) { if (pdfIsMoney(c.s)) return; if (c.x >= amtStart) return; if (PDF_NOISE.test(c.s)) return; cur.desc.push(c.s); });
+        }
+        if (cur) {
+          if (balCell) cur.bal = pdfMoneyVal(balCell.s);
+          if (amtCell) {
+            var v = pdfMoneyVal(amtCell.s);
+            if (creditBound != null && !/^[-($]/.test(amtCell.s.trim())) cur.colAmt = amtCell.x >= creditBound ? Math.abs(v) : -Math.abs(v);
+            else cur.colAmt = v;
+          }
+        }
+      }
+    }
+    pushCur();
+    var out = [], pb = prevBal;
+    raw.forEach(function (t) {
+      var amount = null;
+      if (t.bal != null && pb != null) amount = Math.round((t.bal - pb) * 100) / 100;
+      if ((amount == null || amount === 0) && t.colAmt != null) amount = t.colAmt;
+      if (amount == null || amount === 0) return;
+      if (t.bal != null) pb = t.bal;
+      var desc = t.desc.join(" ").replace(/\s+/g, " ").trim();
+      var isRentIn = amount > 0 && /\brent\b/i.test(desc); // money received that's actually rent collected from housemates
+      out.push({
+        date: t.date, amount: amount, description: desc,
+        type: amount < 0 ? "expense" : "income",
+        category: amount < 0 ? guessCategory(desc) : (isRentIn ? "Rent (collected)" : "Income"),
+        excludeFromIncome: isRentIn, // pass-through — not the user's own income (toggle on the transaction if wrong)
+        include: true,
+        id: "tx_" + t.date + "_" + Math.random().toString(36).slice(2, 7)
+      });
+    });
+    return out;
+  }
   function fromPDF(arrayBuffer) {
     return new Promise(function (resolve) {
       function go() {
@@ -214,22 +327,25 @@
           var pdfjsLib = global.pdfjsLib;
           pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
           pdfjsLib.getDocument({ data: arrayBuffer }).promise.then(function (pdf) {
-            var pages = []; var jobs = [];
+            var jobs = [];
             for (var p = 1; p <= pdf.numPages; p++) {
               jobs.push(pdf.getPage(p).then(function (page) {
                 return page.getTextContent().then(function (tc) {
-                  // group items into lines by y
-                  var lines = {};
-                  tc.items.forEach(function (it) {
-                    var y = Math.round(it.transform[5]);
-                    (lines[y] = lines[y] || []).push(it.str);
-                  });
-                  return Object.keys(lines).sort(function (a, b) { return b - a; }).map(function (y) { return lines[y].join(" "); }).join("\n");
+                  return { items: tc.items.map(function (it) { return { str: it.str, transform: it.transform }; }) };
                 });
               }));
             }
-            Promise.all(jobs).then(function (texts) {
-              resolve(parsePdfText(texts.join("\n")));
+            Promise.all(jobs).then(function (pages) {
+              var txns = [];
+              try { txns = parseStatement(pages); } catch (e) { txns = []; }
+              if (txns && txns.length) { resolve({ transactions: txns, fromPdf: true }); return; }
+              // fallback: generic single-line date+amount text parse
+              var text = pages.map(function (pg) {
+                var lines = {};
+                pg.items.forEach(function (it) { var y = Math.round(it.transform[5]); (lines[y] = lines[y] || []).push({ x: Math.round(it.transform[4]), s: it.str }); });
+                return Object.keys(lines).sort(function (a, b) { return b - a; }).map(function (y) { return lines[y].sort(function (a, b) { return a.x - b.x; }).map(function (c) { return c.s; }).join(" "); }).join("\n");
+              }).join("\n");
+              resolve(parsePdfText(text));
             });
           }).catch(function (e) { resolve({ transactions: [], error: "Could not read PDF: " + e.message }); });
         } catch (e) { resolve({ transactions: [], error: "PDF engine error: " + e.message }); }
@@ -242,13 +358,12 @@
       document.head.appendChild(s);
     });
   }
-  // parse free text lines like: 12/06/2026  WOOLWORTHS METRO  -84.20
+  // generic fallback: free text lines like "12/06/2026  WOOLWORTHS METRO  -84.20"
   function parsePdfText(text) {
     var lines = text.split(/\n/), out = [];
-    // money = has a $ sign OR cents OR parentheses — avoids matching bare account/ref numbers
     var MONEY = /(?:\$\s?-?\d[\d,]*(?:\.\d{2})?|-?\d[\d,]*\.\d{2}|\(\s?\$?\d[\d,]*(?:\.\d{2})?\s?\))/g;
     lines.forEach(function (ln) {
-      var dm = ln.match(/(\d{1,2}[\/\-.][A-Za-z0-9]{2,3}[\/\-.]\d{2,4}|\d{4}-\d{2}-\d{2})/);
+      var dm = ln.match(/(\d{1,2}[\/\-.][A-Za-z0-9]{2,3}[\/\-.]\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}\s+[A-Za-z]{3,}\s+\d{4})/);
       var amts = ln.match(MONEY);
       if (!dm || !amts) return;
       var date = parseDate(dm[1]); if (!date) return;

@@ -151,7 +151,8 @@
     return monthEntries(state, key).reduce(function (s, e) { return s + (e.type === "out" ? Math.abs(+e.amount || 0) : 0); }, 0);
   }
   function monthIncomeActual(state, key) {
-    return monthEntries(state, key).reduce(function (s, e) { return s + (e.type === "in" ? Math.abs(+e.amount || 0) : 0); }, 0);
+    // exclude pass-through money-in flagged as not-my-income (e.g. rent collected for the house)
+    return monthEntries(state, key).reduce(function (s, e) { return s + (e.type === "in" && !e.excludeFromIncome ? Math.abs(+e.amount || 0) : 0); }, 0);
   }
   function expenseByCategory(state, key) {
     var out = {};

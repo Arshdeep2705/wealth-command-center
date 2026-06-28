@@ -5,7 +5,7 @@
   "use strict";
   var M, C, S, IMP, state;
   // Visible build tag — keep in lock-step with CACHE in sw.js. Lets us SEE which build a device is actually running.
-  var APP_VERSION = "v8";
+  var APP_VERSION = "v9";
 
   var NAV = [
     { id: "overview", label: "Command", m: "Home", icon: icoGrid },
@@ -578,6 +578,7 @@
       case "update_transaction": var um = (op.set || {}); var ubits = []; if (um.amount != null) ubits.push(M.money0(um.amount)); if (um.category) ubits.push("→ " + esc(um.category)); if (um.description) ubits.push("“" + esc(um.description) + "”"); if (um.date) ubits.push("@ " + esc(um.date)); return "✏️ Edit transaction <b>" + esc((op.match || {}).description || "?") + "</b>" + (ubits.length ? " · " + ubits.join(", ") : "");
       case "remove_transaction": return "🗑️ Delete transaction <b>" + esc((op.match || {}).description || "?") + "</b>" + ((op.match || {}).month ? " (" + esc(op.match.month) + ")" : "");
       case "bulk_categorize": return "🏷️ Recategorise all matching <b>" + esc((op.match || {}).descriptionContains || (op.match || {}).description || "?") + "</b> → " + esc(op.category || "?");
+      case "exclude_income": return "🚫 " + (op.exclude === false ? "Count as income again" : "Don’t count as my income (pass-through)") + ": money in matching <b>" + esc((op.match || {}).descriptionContains || (op.match || {}).description || "?") + "</b>";
       case "add_recurring_expense": return "🔁 " + (op.type === "in" ? "Income" : "Expense") + " <b>" + esc(op.description || "Recurring") + "</b> " + M.money0(op.amount || 0) + "/mo · " + esc(op.from || "start") + "→" + esc(op.to || "end") + " (day " + (op.dayOfMonth || 1) + ")";
       case "rename_account": return "🏦 Rename account <b>" + esc(op.name) + "</b> → <b>" + esc(op.newName || "?") + "</b>";
       case "rename_income_source": return "💼 Rename income <b>" + esc(op.name) + "</b> → <b>" + esc(op.newName || "?") + "</b>";
@@ -651,6 +652,10 @@
         } else if (op.op === "bulk_categorize") {
           var bc = matchEntries(op.match); if (!op.category || !bc.length) return;
           bc.forEach(function (h) { if (h.e.type === "out") h.e.category = String(op.category); }); n += bc.length;
+        } else if (op.op === "exclude_income") {
+          var ei = matchEntries(op.match); var exv = op.exclude !== false; var ec = 0;
+          ei.forEach(function (h) { if (h.e.type === "in") { h.e.excludeFromIncome = exv; if (exv && (!h.e.category || h.e.category === "Income")) h.e.category = "Rent (collected)"; else if (!exv && h.e.category === "Rent (collected)") h.e.category = "Income"; ec++; } });
+          n += ec;
         } else if (op.op === "add_recurring_expense") {
           var range = S.monthRange(op.from || state.horizon.startMonth, op.to || state.horizon.endMonth);
           var dom = Math.min(28, Math.max(1, +op.dayOfMonth || 1)), rtyp = op.type === "in" ? "in" : "out", ramt = Math.abs(+op.amount || 0);
@@ -836,6 +841,7 @@
       '<label class="field"><span>Amount ($)</span><input type="number" name="amount" step="0.01" min="0" value="' + (e.amount || "") + '" placeholder="0.00" required></label></div>' +
       '<label class="field"><span>Description</span><input type="text" name="description" value="' + esc(e.description) + '" placeholder="e.g. Woolworths, or ‘car repair’" required></label>' +
       '<label class="field"><span>Category</span><select name="category">' + cats.map(function (c) { return '<option ' + (e.category === c ? "selected" : "") + '>' + esc(c) + '</option>'; }).join("") + '</select></label>' +
+      '<label class="check"' + (isIn ? '' : ' style="display:none"') + ' data-inc-only><input type="checkbox" name="exclnc" ' + (e.excludeFromIncome ? "checked" : "") + '><span>Money in, but <b>not my income</b> (e.g. rent I collect for the house) — leave out of income totals</span></label>' +
       '<label class="field"><span>Note — explain this one (optional)</span><textarea name="note" rows="2" placeholder="e.g. One-off car repair, not a normal month. Or: this transfer is actually savings.">' + esc(e.note || "") + '</textarea></label>' +
       '</form>',
       (isNew ? '' : '<button class="pill-btn danger" data-del-entry="' + esc(e.id) + '">Delete</button>') +
@@ -844,6 +850,7 @@
     $$("[name=type]").forEach(function (r) { r.addEventListener("change", function () {
       $$(".type-toggle .tt").forEach(function (l) { l.classList.remove("on", "in", "out"); });
       var lab = r.closest(".tt"); lab.classList.add("on", r.value);
+      var inc = $("[data-inc-only]"); if (inc) inc.style.display = (r.value === "in") ? "" : "none";
     }); });
   }
   function saveEntry() {
@@ -852,7 +859,8 @@
     var d = f.date.value, key = d.slice(0, 7);
     if (!state.months[key]) { toast("Date must be within " + M.monthLabel(M.months(state)[0]) + "–" + M.monthLabel(M.months(state).slice(-1)[0])); return; }
     var type = f.type.value === "in" ? "in" : "out";
-    var obj = { id: f.id.value, date: d, description: f.description.value.trim(), amount: amt, type: type, category: type === "in" ? "Income" : f.category.value, note: (f.note.value || "").trim() };
+    var excl = type === "in" && !!(f.exclnc && f.exclnc.checked);
+    var obj = { id: f.id.value, date: d, description: f.description.value.trim(), amount: amt, type: type, category: type === "in" ? (excl ? "Rent (collected)" : "Income") : f.category.value, excludeFromIncome: excl, note: (f.note.value || "").trim() };
     // remove any existing copy (date/month may have changed), then add to the right month
     var existing = findEntry(obj.id);
     if (existing) state.months[existing.key].entries = state.months[existing.key].entries.filter(function (x) { return x.id !== obj.id; });
@@ -1080,7 +1088,8 @@
       if (dup) { dupes++; return; }
       state.months[key].entries.push({
         id: t.id, date: t.date, description: desc, amount: amt,
-        type: type, category: inn ? "Income" : (t.category || "Other"), note: (t.note || "").trim()
+        type: type, category: type === "in" ? (t.category || "Income") : (t.category || "Other"),
+        excludeFromIncome: !!t.excludeFromIncome, note: (t.note || "").trim()
       });
       added++;
     });
